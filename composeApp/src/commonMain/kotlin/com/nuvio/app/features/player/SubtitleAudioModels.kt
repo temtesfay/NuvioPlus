@@ -38,11 +38,11 @@ enum class SubtitleTab {
     Style,
 }
 
-enum class SubtitleFontFamily(val displayName: String, val mpvFontName: String?) {
-    Auto("Auto", null),
-    SansSerif("Sans", "Helvetica Neue"),
-    Serif("Serif", "Georgia"),
-    Monospace("Mono", "Courier New"),
+enum class SubtitleFontFamily(val displayName: String) {
+    Auto("Auto"),
+    SansSerif("Sans"),
+    Serif("Serif"),
+    Monospace("Mono"),
 }
 
 enum class SubtitleFontWeight(val displayName: String) {
@@ -69,19 +69,54 @@ data class SubtitleStyleState(
     }
 }
 
-fun SubtitleStyleState.toMpvFontName(): String? {
-    val base = fontFamily.mpvFontName
-    return when (fontWeight) {
-        SubtitleFontWeight.Thin -> if (base == null) "Helvetica Neue UltraLight" else "$base UltraLight"
-        SubtitleFontWeight.Light -> if (base == null) "Helvetica Neue Light" else "$base Light"
-        SubtitleFontWeight.Regular -> base
-        SubtitleFontWeight.Bold -> if (base == null) null else "$base Bold"
-        SubtitleFontWeight.Heavy -> if (base == null) "Arial Black" else "$base Bold"
+/**
+ * Maps a (family, weight) pair to an actual iOS PostScript font name that
+ * libmpv/CoreText can resolve. Returns null for the user's "Auto" choice at
+ * Regular weight (uses MPV's default), so we don't override system default
+ * unnecessarily.
+ *
+ * Notes:
+ *  - Georgia has no Light/Thin variant; falls back to Regular.
+ *  - Menlo (the iOS monospace font) only has Regular/Bold/Italic; lighter
+ *    weights fall back to Regular.
+ *  - HelveticaNeue is the most complete: Thin / UltraLight / Light /
+ *    Regular / Medium / Bold / CondensedBlack.
+ */
+fun SubtitleStyleState.toMpvFontName(): String? = when (fontFamily) {
+    SubtitleFontFamily.Auto -> if (fontWeight == SubtitleFontWeight.Regular) {
+        null
+    } else {
+        helveticaNeueForWeight(fontWeight)
     }
+    SubtitleFontFamily.SansSerif -> helveticaNeueForWeight(fontWeight)
+    SubtitleFontFamily.Serif -> georgiaForWeight(fontWeight)
+    SubtitleFontFamily.Monospace -> menloForWeight(fontWeight)
 }
 
-fun SubtitleStyleState.toMpvIsBold(): Boolean =
-    fontWeight == SubtitleFontWeight.Bold || fontWeight == SubtitleFontWeight.Heavy
+private fun helveticaNeueForWeight(weight: SubtitleFontWeight): String = when (weight) {
+    SubtitleFontWeight.Thin -> "HelveticaNeue-Thin"
+    SubtitleFontWeight.Light -> "HelveticaNeue-Light"
+    SubtitleFontWeight.Regular -> "HelveticaNeue"
+    SubtitleFontWeight.Bold -> "HelveticaNeue-Bold"
+    SubtitleFontWeight.Heavy -> "HelveticaNeue-CondensedBlack"
+}
+
+private fun georgiaForWeight(weight: SubtitleFontWeight): String = when (weight) {
+    SubtitleFontWeight.Bold, SubtitleFontWeight.Heavy -> "Georgia-Bold"
+    else -> "Georgia"
+}
+
+private fun menloForWeight(weight: SubtitleFontWeight): String = when (weight) {
+    SubtitleFontWeight.Bold, SubtitleFontWeight.Heavy -> "Menlo-Bold"
+    else -> "Menlo-Regular"
+}
+
+/**
+ * Weight is now encoded directly into the PostScript font name, so we never
+ * need to ask MPV to synthesize a bold (which can produce smeary results in
+ * strip-renderer mode). Always returns false.
+ */
+fun SubtitleStyleState.toMpvIsBold(): Boolean = false
 
 val SubtitleColorSwatches = listOf(
     Color.White,

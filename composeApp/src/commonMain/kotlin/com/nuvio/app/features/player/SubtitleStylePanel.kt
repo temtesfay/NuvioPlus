@@ -319,12 +319,19 @@ private fun StyleControlsCard(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = "Font",
-                color = colorScheme.onSurfaceVariant,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Font",
+                    color = colorScheme.onSurfaceVariant,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = "Experimental — may not apply on this build",
+                    color = colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    fontSize = 10.sp,
+                )
+            }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

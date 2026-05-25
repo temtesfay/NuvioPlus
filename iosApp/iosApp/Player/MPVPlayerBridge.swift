@@ -172,8 +172,10 @@ final class MPVPlayerBridgeImpl: NSObject, NuvioPlayerBridge {
 
         // Font (CTFontDescriptor)
         let fontDesc = MACaptionAppearanceCopyFontDescriptorForStyle(domain, &fontBehavior, .default).takeRetainedValue()
-        let attr = CTFontDescriptorCopyAttribute(fontDesc, kCTFontFamilyNameAttribute) as? String
-        let fontName = attr
+        let rawFamily = CTFontDescriptorCopyAttribute(fontDesc, kCTFontFamilyNameAttribute) as? String
+        let rawPostscript = CTFontDescriptorCopyAttribute(fontDesc, kCTFontNameAttribute) as? String
+        let fontName = sanitizeSystemFontName(family: rawFamily, postscript: rawPostscript)
+        print("[Nuvio] system font raw family=\(rawFamily ?? "nil") postscript=\(rawPostscript ?? "nil") sanitized=\(fontName ?? "nil")")
 
         // Relative character size — 1.0 = default
         let scale = MACaptionAppearanceGetRelativeCharacterSize(domain, &scaleBehavior)
@@ -198,6 +200,30 @@ final class MPVPlayerBridgeImpl: NSObject, NuvioPlayerBridge {
         }
         print("[Nuvio] readSystemSubtitleStyleJson => \(json)")
         return json
+    }
+
+    /// iOS Accessibility may return hidden system fonts (postscript names that
+    /// start with ".", like ".AppleSystemUIFontMonospaced") that MPV/CoreText
+    /// can't resolve from app code. Map those to public-equivalent PostScript
+    /// names that we know work, and pass through any normal font unchanged.
+    private func sanitizeSystemFontName(family: String?, postscript: String?) -> String? {
+        let hidden = (family?.hasPrefix(".") ?? false) || (postscript?.hasPrefix(".") ?? false)
+        if !hidden {
+            // Prefer PostScript name (precise weight/style); fall back to family.
+            return postscript ?? family
+        }
+        let combined = ((family ?? "") + " " + (postscript ?? "")).lowercased()
+        if combined.contains("mono") {
+            return "Menlo-Regular"
+        }
+        if combined.contains("rounded") {
+            return "HelveticaNeue"
+        }
+        if combined.contains("serif") && !combined.contains("sans") {
+            return "Georgia"
+        }
+        // Default: iOS system UI font surrogate
+        return "HelveticaNeue"
     }
 
     /// Converts a CGColor + opacity into MPV's #AARRGGBB hex string.
@@ -712,12 +738,14 @@ final class MPVPlayerViewController: UIViewController {
         var position = Int64(subPos)
         checkError(mpv_set_property(mpv, "sub-pos", MPV_FORMAT_INT64, &position))
 
-        // Font name
-        if !fontName.isEmpty {
-            checkError(mpv_set_property_string(mpv, "sub-font", fontName))
-        } else {
-            checkError(mpv_set_property_string(mpv, "sub-font", "sans-serif"))
-        }
+        // Font name — set both sub-font (for subtitles) and osd-font (used in
+        // some strip-renderer code paths). NOTE: MPVKit's bundled libmpv does
+        // not expose a configurable font loader, so this is essentially a hint
+        // and the actual rendered font may not change. Kept here in case a
+        // future MPVKit build adds proper font support.
+        let effectiveFont = fontName.isEmpty ? "sans-serif" : fontName
+        checkError(mpv_set_property_string(mpv, "sub-font", effectiveFont))
+        checkError(mpv_set_property_string(mpv, "osd-font", effectiveFont))
 
         // Bold
         checkError(mpv_set_property_string(mpv, "sub-bold", isBold ? "yes" : "no"))
