@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -20,11 +21,14 @@ import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -77,6 +81,56 @@ private fun StyleControlsCard(
             icon = Icons.Rounded.Tune,
             label = stringResource(Res.string.compose_player_style),
         )
+
+        // Use iOS system subtitle settings toggle
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Use system subtitle settings",
+                    color = colorScheme.onSurfaceVariant,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = "From iOS Settings > Accessibility > Subtitles & Captioning",
+                    color = colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    fontSize = 11.sp,
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(
+                        if (style.useSystemSubtitleSettings) colorScheme.primaryContainer
+                        else colorScheme.surface.copy(alpha = 0.8f)
+                    )
+                    .border(1.dp, colorScheme.outlineVariant.copy(alpha = 0.8f), RoundedCornerShape(10.dp))
+                    .clickable { onStyleChanged(style.copy(useSystemSubtitleSettings = !style.useSystemSubtitleSettings)) }
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    text = if (style.useSystemSubtitleSettings) stringResource(Res.string.compose_action_on)
+                    else stringResource(Res.string.compose_action_off),
+                    color = if (style.useSystemSubtitleSettings) colorScheme.onPrimaryContainer else colorScheme.onSurface,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                )
+            }
+        }
+
+        // When system settings are on, hide manual controls
+        if (style.useSystemSubtitleSettings) {
+            Text(
+                text = "Subtitle appearance is controlled by your iOS accessibility settings.",
+                color = colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                fontSize = 12.sp,
+            )
+            return@Column
+        }
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -190,6 +244,148 @@ private fun StyleControlsCard(
                         )
                         .clickable { onStyleChanged(style.copy(textColor = color)) },
                 )
+            }
+        }
+
+        // Background Color
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Background",
+                color = colorScheme.onSurfaceVariant,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            SubtitleColorSwatches.forEach { color ->
+                val isSelected = style.backgroundColor == color
+                Box(
+                    modifier = Modifier
+                        .size(22.dp)
+                        .clip(CircleShape)
+                        .background(if (color == Color.White) colorScheme.surfaceVariant else color)
+                        .border(
+                            2.dp,
+                            if (isSelected) colorScheme.primary else colorScheme.outlineVariant,
+                            CircleShape,
+                        )
+                        .clickable { onStyleChanged(style.copy(backgroundColor = color)) },
+                )
+            }
+        }
+
+        // Background Opacity
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Background Opacity",
+                color = colorScheme.onSurfaceVariant,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = "${(style.backgroundOpacity * 100).toInt()}%",
+                color = colorScheme.onSurface,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+
+        Slider(
+            value = style.backgroundOpacity,
+            onValueChange = { onStyleChanged(style.copy(backgroundOpacity = it)) },
+            valueRange = 0f..1f,
+            modifier = Modifier.fillMaxWidth().height(28.dp),
+            colors = SliderDefaults.colors(
+                thumbColor = colorScheme.primary,
+                activeTrackColor = colorScheme.primary,
+                inactiveTrackColor = colorScheme.outlineVariant,
+            ),
+        )
+
+        // Font Family
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Font",
+                color = colorScheme.onSurfaceVariant,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SubtitleFontFamily.entries.forEach { family ->
+                val isSelected = style.fontFamily == family
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            if (isSelected) colorScheme.primaryContainer
+                            else colorScheme.surface.copy(alpha = 0.8f)
+                        )
+                        .border(1.dp, colorScheme.outlineVariant.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
+                        .clickable { onStyleChanged(style.copy(fontFamily = family)) }
+                        .padding(horizontal = 10.dp, vertical = 7.dp),
+                ) {
+                    Text(
+                        text = family.displayName,
+                        color = if (isSelected) colorScheme.onPrimaryContainer else colorScheme.onSurface,
+                        fontSize = 13.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                    )
+                }
+            }
+        }
+
+        // Font Weight
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Weight",
+                color = colorScheme.onSurfaceVariant,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SubtitleFontWeight.entries.forEach { weight ->
+                val isSelected = style.fontWeight == weight
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            if (isSelected) colorScheme.primaryContainer
+                            else colorScheme.surface.copy(alpha = 0.8f)
+                        )
+                        .border(1.dp, colorScheme.outlineVariant.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
+                        .clickable { onStyleChanged(style.copy(fontWeight = weight)) }
+                        .padding(horizontal = 8.dp, vertical = 7.dp),
+                ) {
+                    Text(
+                        text = weight.displayName,
+                        color = if (isSelected) colorScheme.onPrimaryContainer else colorScheme.onSurface,
+                        fontSize = 12.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                    )
+                }
             }
         }
 

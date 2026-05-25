@@ -231,6 +231,18 @@ object PlayerSettingsRepository {
                 ?: SubtitleStyleState.DEFAULT.fontSizeSp,
             bottomOffset = PlayerSettingsStorage.loadSubtitleBottomOffset()
                 ?: SubtitleStyleState.DEFAULT.bottomOffset,
+            backgroundColor = subtitleColorFromStorage(PlayerSettingsStorage.loadSubtitleBackgroundColor())
+                ?: SubtitleStyleState.DEFAULT.backgroundColor,
+            backgroundOpacity = PlayerSettingsStorage.loadSubtitleBackgroundOpacity()
+                ?: SubtitleStyleState.DEFAULT.backgroundOpacity,
+            fontFamily = PlayerSettingsStorage.loadSubtitleFontFamily()
+                ?.let { runCatching { SubtitleFontFamily.valueOf(it) }.getOrNull() }
+                ?: SubtitleStyleState.DEFAULT.fontFamily,
+            fontWeight = PlayerSettingsStorage.loadSubtitleFontWeight()
+                ?.let { runCatching { SubtitleFontWeight.valueOf(it) }.getOrNull() }
+                ?: SubtitleStyleState.DEFAULT.fontWeight,
+            useSystemSubtitleSettings = PlayerSettingsStorage.loadSubtitleUseSystemSettings()
+                ?: SubtitleStyleState.DEFAULT.useSystemSubtitleSettings,
         )
         streamReuseLastLinkEnabled = PlayerSettingsStorage.loadStreamReuseLastLinkEnabled() ?: false
         streamReuseLastLinkCacheHours = PlayerSettingsStorage.loadStreamReuseLastLinkCacheHours() ?: 24
@@ -411,6 +423,11 @@ object PlayerSettingsRepository {
         PlayerSettingsStorage.saveSubtitleOutlineEnabled(style.outlineEnabled)
         PlayerSettingsStorage.saveSubtitleFontSizeSp(style.fontSizeSp)
         PlayerSettingsStorage.saveSubtitleBottomOffset(style.bottomOffset)
+        PlayerSettingsStorage.saveSubtitleBackgroundColor(style.backgroundColor.toStorageHexString())
+        PlayerSettingsStorage.saveSubtitleBackgroundOpacity(style.backgroundOpacity)
+        PlayerSettingsStorage.saveSubtitleFontFamily(style.fontFamily.name)
+        PlayerSettingsStorage.saveSubtitleFontWeight(style.fontWeight.name)
+        PlayerSettingsStorage.saveSubtitleUseSystemSettings(style.useSystemSubtitleSettings)
     }
 
     fun setStreamReuseLastLinkEnabled(enabled: Boolean) {

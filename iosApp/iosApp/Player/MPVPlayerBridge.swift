@@ -2,6 +2,8 @@ import Foundation
 import UIKit
 import Libmpv
 import ComposeApp
+import MediaAccessibility
+import CoreText
 
 // MARK: - Player Bridge Implementation (Kotlin protocol conformance)
 
@@ -113,13 +115,117 @@ final class MPVPlayerBridgeImpl: NSObject, NuvioPlayerBridge {
     func setSubtitleUrl(url: String) { playerVC?.addSubtitleUrl(url) }
     func clearExternalSubtitle() { playerVC?.removeExternalSubtitles() }
     func clearExternalSubtitleAndSelect(trackId: Int32) { playerVC?.removeExternalSubtitlesAndSelect(Int(trackId)) }
-    func applySubtitleStyle(textColor: String, outlineSize: Float, fontSize: Float, subPos: Int32) {
+    func applySubtitleStyle(textColor: String, outlineSize: Float, fontSize: Float, subPos: Int32, backColor: String, fontName: String, isBold: Bool) {
         playerVC?.applySubtitleStyle(
             textColor: textColor,
             outlineSize: outlineSize,
             fontSize: fontSize,
-            subPos: Int(subPos)
+            subPos: Int(subPos),
+            backColor: backColor,
+            fontName: fontName,
+            isBold: isBold
         )
+    }
+
+    /// Reads the user's iOS system caption preferences from MediaAccessibility
+    /// (Settings > Accessibility > Subtitles & Captioning) and returns them as a
+    /// JSON blob the Kotlin layer can parse. Returns nil if reading fails.
+    func readSystemSubtitleStyleJson() -> String? {
+        let domain = MACaptionAppearanceDomain.user
+        var fgBehavior = MACaptionAppearanceBehavior.useValue
+        var fgOpacityBehavior = MACaptionAppearanceBehavior.useValue
+        var bgBehavior = MACaptionAppearanceBehavior.useValue
+        var bgOpacityBehavior = MACaptionAppearanceBehavior.useValue
+        var winBehavior = MACaptionAppearanceBehavior.useValue
+        var winOpacityBehavior = MACaptionAppearanceBehavior.useValue
+        var fontBehavior = MACaptionAppearanceBehavior.useValue
+        var scaleBehavior = MACaptionAppearanceBehavior.useValue
+
+        // Foreground (text) color + opacity
+        let fgCG = MACaptionAppearanceCopyForegroundColor(domain, &fgBehavior).takeRetainedValue()
+        let fgOpacity = MACaptionAppearanceGetForegroundOpacity(domain, &fgOpacityBehavior)
+        let textHex = mpvHexAARRGGBB(cgColor: fgCG, opacity: CGFloat(fgOpacity), label: "foreground")
+
+        // Background color + opacity (the highlight directly behind text characters)
+        let bgCG = MACaptionAppearanceCopyBackgroundColor(domain, &bgBehavior).takeRetainedValue()
+        let bgOpacity = MACaptionAppearanceGetBackgroundOpacity(domain, &bgOpacityBehavior)
+
+        // Window color + opacity (the larger container box around all captions)
+        let winCG = MACaptionAppearanceCopyWindowColor(domain, &winBehavior).takeRetainedValue()
+        let winOpacity = MACaptionAppearanceGetWindowOpacity(domain, &winOpacityBehavior)
+
+        // Pick whichever the user actually set. iOS has both "Background" (per-line
+        // highlight) and "Window" (full container) in Accessibility settings. Prefer
+        // Background if it has opacity, fall back to Window otherwise.
+        let bgOpacityCG = CGFloat(bgOpacity)
+        let winOpacityCG = CGFloat(winOpacity)
+        let backHex: String
+        if bgOpacityCG > 0 {
+            backHex = mpvHexAARRGGBB(cgColor: bgCG, opacity: bgOpacityCG, label: "background")
+        } else if winOpacityCG > 0 {
+            backHex = mpvHexAARRGGBB(cgColor: winCG, opacity: winOpacityCG, label: "window")
+        } else {
+            backHex = mpvHexAARRGGBB(cgColor: bgCG, opacity: bgOpacityCG, label: "background")
+        }
+
+        print("[Nuvio] system caption: fgBehavior=\(fgBehavior.rawValue) fgOpacity=\(fgOpacity) bgBehavior=\(bgBehavior.rawValue) bgOpacity=\(bgOpacity) winBehavior=\(winBehavior.rawValue) winOpacity=\(winOpacity)")
+
+        // Font (CTFontDescriptor)
+        let fontDesc = MACaptionAppearanceCopyFontDescriptorForStyle(domain, &fontBehavior, .default).takeRetainedValue()
+        let attr = CTFontDescriptorCopyAttribute(fontDesc, kCTFontFamilyNameAttribute) as? String
+        let fontName = attr
+
+        // Relative character size — 1.0 = default
+        let scale = MACaptionAppearanceGetRelativeCharacterSize(domain, &scaleBehavior)
+
+        // Bold detection via font traits (best-effort)
+        var isBold = false
+        if let traits = CTFontDescriptorCopyAttribute(fontDesc, kCTFontTraitsAttribute) as? [String: Any],
+           let symbolic = traits[kCTFontSymbolicTrait as String] as? UInt32 {
+            isBold = (symbolic & CTFontSymbolicTraits.boldTrait.rawValue) != 0
+        }
+
+        let dict: [String: Any] = [
+            "textColorHex": textHex,
+            "backColorHex": backHex,
+            "fontName": fontName ?? NSNull(),
+            "fontSizeScale": String(format: "%.3f", scale),
+            "isBold": isBold ? "true" : "false",
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: dict, options: []),
+              let json = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        print("[Nuvio] readSystemSubtitleStyleJson => \(json)")
+        return json
+    }
+
+    /// Converts a CGColor + opacity into MPV's #AARRGGBB hex string.
+    /// Robust against any color space (RGB, grayscale, P3, etc.) by going through UIColor.
+    private func mpvHexAARRGGBB(cgColor: CGColor, opacity: CGFloat, label: String) -> String {
+        let uiColor = UIColor(cgColor: cgColor)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, aFromColor: CGFloat = 1
+
+        // Try RGB extraction first
+        if !uiColor.getRed(&r, green: &g, blue: &b, alpha: &aFromColor) {
+            // Fall back to grayscale extraction (e.g., when user picks pure black/white)
+            var w: CGFloat = 0
+            if uiColor.getWhite(&w, alpha: &aFromColor) {
+                r = w; g = w; b = w
+            } else {
+                print("[Nuvio] WARN: could not extract \(label) color components, defaulting to black")
+                r = 0; g = 0; b = 0; aFromColor = 1
+            }
+        }
+
+        let alpha = max(0, min(1, opacity * aFromColor))
+        print("[Nuvio] \(label) color rgba=(\(r),\(g),\(b),\(aFromColor)) opacity=\(opacity) final-alpha=\(alpha)")
+
+        func byte(_ v: CGFloat) -> String {
+            let i = max(0, min(255, Int((v * 255).rounded())))
+            return String(format: "%02X", i)
+        }
+        return "#\(byte(alpha))\(byte(r))\(byte(g))\(byte(b))"
     }
 
     // State - refreshes position from mpv on each call (polled from Kotlin every 250ms)
@@ -575,10 +681,25 @@ final class MPVPlayerViewController: UIViewController {
         }
     }
 
-    func applySubtitleStyle(textColor: String, outlineSize: Float, fontSize: Float, subPos: Int) {
+    func applySubtitleStyle(textColor: String, outlineSize: Float, fontSize: Float, subPos: Int, backColor: String, fontName: String, isBold: Bool) {
         guard mpv != nil else { return }
 
-        checkError(mpv_set_property_string(mpv, "sub-ass-override", "force"))
+        print("[Nuvio] applySubtitleStyle: text=\(textColor) back=\(backColor) font=\(fontName) bold=\(isBold)")
+
+        // "strip" uses MPV's built-in plain text renderer instead of libass.
+        // Required so dynamic property changes (color, bold, background) take effect.
+        checkError(mpv_set_property_string(mpv, "sub-ass-override", "strip"))
+
+        // CRITICAL: enable background-box border style so sub-back-color actually
+        // renders as a solid background box. Without this, MPV uses outline+shadow
+        // by default and sub-back-color has no visible effect.
+        // Try background-box first; if unsupported on this libmpv, fall back to opaque-box.
+        let borderStyleErr = mpv_set_property_string(mpv, "sub-border-style", "background-box")
+        if borderStyleErr < 0 {
+            print("[Nuvio] sub-border-style=background-box rejected (err=\(borderStyleErr)), trying opaque-box")
+            checkError(mpv_set_property_string(mpv, "sub-border-style", "opaque-box"))
+        }
+
         checkError(mpv_set_property_string(mpv, "sub-color", textColor))
         checkError(mpv_set_property_string(mpv, "sub-outline-color", "#000000"))
 
@@ -590,6 +711,20 @@ final class MPVPlayerViewController: UIViewController {
 
         var position = Int64(subPos)
         checkError(mpv_set_property(mpv, "sub-pos", MPV_FORMAT_INT64, &position))
+
+        // Font name
+        if !fontName.isEmpty {
+            checkError(mpv_set_property_string(mpv, "sub-font", fontName))
+        } else {
+            checkError(mpv_set_property_string(mpv, "sub-font", "sans-serif"))
+        }
+
+        // Bold
+        checkError(mpv_set_property_string(mpv, "sub-bold", isBold ? "yes" : "no"))
+
+        // Background box color (only visible when sub-border-style is opaque-box / background-box)
+        // Format: #AARRGGBB (alpha FIRST), 00=transparent, FF=opaque.
+        checkError(mpv_set_property_string(mpv, "sub-back-color", backColor))
     }
 
     func destroyPlayer() {

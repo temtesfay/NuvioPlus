@@ -207,11 +207,36 @@ actual fun PlatformPlayerSurface(
             }
 
             override fun applySubtitleStyle(style: SubtitleStyleState) {
+                if (style.useSystemSubtitleSettings) {
+                    val systemJson = bridge.readSystemSubtitleStyleJson()
+                    val systemStyle = systemJson?.let { parseSystemSubtitleStyle(it) }
+                    if (systemStyle != null) {
+                        bridge.applySubtitleStyle(
+                            textColor = systemStyle.textColorHex
+                                ?: style.textColor.toMpvColorString(),
+                            outlineSize = if (style.outlineEnabled) 1.65f else 0f,
+                            fontSize = applySystemFontScale(
+                                style.toMpvSubtitleFontSize(),
+                                systemStyle.fontSizeScale,
+                            ),
+                            subPos = style.toMpvSubtitlePosition(),
+                            backColor = systemStyle.backColorHex
+                                ?: style.toMpvBackColorString(),
+                            fontName = systemStyle.fontName ?: style.toMpvFontName() ?: "",
+                            isBold = systemStyle.isBold || style.toMpvIsBold(),
+                        )
+                        return
+                    }
+                    // Fall through to user style if system settings couldn't be read
+                }
                 bridge.applySubtitleStyle(
                     textColor = style.textColor.toMpvColorString(),
                     outlineSize = if (style.outlineEnabled) 1.65f else 0f,
                     fontSize = style.toMpvSubtitleFontSize(),
                     subPos = style.toMpvSubtitlePosition(),
+                    backColor = style.toMpvBackColorString(),
+                    fontName = style.toMpvFontName() ?: "",
+                    isBold = style.toMpvIsBold(),
                 )
             }
         }
@@ -229,11 +254,20 @@ actual fun PlatformPlayerSurface(
             sourceAudioUrl,
             encodePlaybackHeadersForBridge(sourceHeaders),
         )
+        // Re-apply persisted subtitle style on each new stream so user preferences
+        // (background color, opacity, font, weight, system settings toggle) survive
+        // transitions between videos.
+        controller.applySubtitleStyle(latestPlayerSettings.value.subtitleStyle)
         if (playWhenReady) {
             bridge.play()
         } else {
             bridge.pause()
         }
+    }
+
+    // Also re-apply whenever the user changes the subtitle style during playback.
+    LaunchedEffect(bridge, playerSettings.subtitleStyle) {
+        controller.applySubtitleStyle(playerSettings.subtitleStyle)
     }
 
     // Update playWhenReady
@@ -330,6 +364,21 @@ private fun SubtitleStyleState.toMpvSubtitlePosition(): Int =
 private fun SubtitleStyleState.toMpvSubtitleFontSize(): Float =
     (fontSizeSp * 3f).coerceIn(24f, 96f)
 
+private fun SubtitleStyleState.toMpvBackColorString(): String {
+    val alphaInt = (backgroundOpacity * 255f).toInt().coerceIn(0, 255)
+    val redInt = (backgroundColor.red * 255f).toInt().coerceIn(0, 255)
+    val greenInt = (backgroundColor.green * 255f).toInt().coerceIn(0, 255)
+    val blueInt = (backgroundColor.blue * 255f).toInt().coerceIn(0, 255)
+    // MPV color format: #AARRGGBB (alpha first), 00=transparent, FF=opaque
+    return buildString {
+        append('#')
+        append(alphaInt.toHexByte())
+        append(redInt.toHexByte())
+        append(greenInt.toHexByte())
+        append(blueInt.toHexByte())
+    }
+}
+
 private fun Int.toHexByte(): String {
     val digits = "0123456789ABCDEF"
     val value = coerceIn(0, 255)
@@ -347,4 +396,37 @@ private fun encodePlaybackHeadersForBridge(headers: Map<String, String>): String
     return runCatching {
         Json.encodeToString(sanitized)
     }.getOrNull()
+}
+
+private data class SystemSubtitleStyle(
+    val textColorHex: String?,
+    val backColorHex: String?,
+    val fontName: String?,
+    val fontSizeScale: Float?,
+    val isBold: Boolean,
+)
+
+private fun parseSystemSubtitleStyle(json: String): SystemSubtitleStyle? = runCatching {
+    val obj = Json.parseToJsonElement(json) as? kotlinx.serialization.json.JsonObject
+        ?: return@runCatching null
+
+    fun stringField(key: String): String? {
+        val el = obj[key] ?: return null
+        if (el is kotlinx.serialization.json.JsonNull) return null
+        val prim = el as? kotlinx.serialization.json.JsonPrimitive ?: return null
+        return prim.content
+    }
+
+    SystemSubtitleStyle(
+        textColorHex = stringField("textColorHex"),
+        backColorHex = stringField("backColorHex"),
+        fontName = stringField("fontName"),
+        fontSizeScale = stringField("fontSizeScale")?.toFloatOrNull(),
+        isBold = stringField("isBold")?.toBooleanStrictOrNull() ?: false,
+    )
+}.getOrNull()
+
+private fun applySystemFontScale(baseSize: Float, scale: Float?): Float {
+    if (scale == null || scale <= 0f) return baseSize
+    return (baseSize * scale).coerceIn(24f, 120f)
 }

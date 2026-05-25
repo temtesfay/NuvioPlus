@@ -31,6 +31,11 @@ actual object PlayerSettingsStorage {
     private const val subtitleOutlineEnabledKey = "subtitle_outline_enabled"
     private const val subtitleFontSizeSpKey = "subtitle_font_size_sp"
     private const val subtitleBottomOffsetKey = "subtitle_bottom_offset"
+    private const val subtitleBackgroundColorKey = "subtitle_background_color"
+    private const val subtitleBackgroundOpacityKey = "subtitle_background_opacity"
+    private const val subtitleFontFamilyKey = "subtitle_font_family"
+    private const val subtitleFontWeightKey = "subtitle_font_weight"
+    private const val subtitleUseSystemSettingsKey = "subtitle_use_system_settings"
     private const val streamReuseLastLinkEnabledKey = "stream_reuse_last_link_enabled"
     private const val streamReuseLastLinkCacheHoursKey = "stream_reuse_last_link_cache_hours"
     private const val decoderPriorityKey = "decoder_priority"
@@ -84,6 +89,11 @@ actual object PlayerSettingsStorage {
         subtitleOutlineEnabledKey,
         subtitleFontSizeSpKey,
         subtitleBottomOffsetKey,
+        subtitleBackgroundColorKey,
+        subtitleBackgroundOpacityKey,
+        subtitleFontFamilyKey,
+        subtitleFontWeightKey,
+        subtitleUseSystemSettingsKey,
         streamReuseLastLinkEnabledKey,
         streamReuseLastLinkCacheHoursKey,
         decoderPriorityKey,
@@ -326,6 +336,43 @@ actual object PlayerSettingsStorage {
 
     actual fun saveSubtitleBottomOffset(bottomOffset: Int) {
         NSUserDefaults.standardUserDefaults.setInteger(bottomOffset.toLong(), forKey = ProfileScopedKey.of(subtitleBottomOffsetKey))
+    }
+
+    actual fun loadSubtitleBackgroundColor(): String? =
+        NSUserDefaults.standardUserDefaults.stringForKey(ProfileScopedKey.of(subtitleBackgroundColorKey))
+
+    actual fun saveSubtitleBackgroundColor(colorHex: String) {
+        NSUserDefaults.standardUserDefaults.setObject(colorHex, forKey = ProfileScopedKey.of(subtitleBackgroundColorKey))
+    }
+
+    actual fun loadSubtitleBackgroundOpacity(): Float? {
+        val defaults = NSUserDefaults.standardUserDefaults
+        val key = ProfileScopedKey.of(subtitleBackgroundOpacityKey)
+        return if (defaults.objectForKey(key) != null) defaults.floatForKey(key) else null
+    }
+
+    actual fun saveSubtitleBackgroundOpacity(opacity: Float) {
+        NSUserDefaults.standardUserDefaults.setFloat(opacity, forKey = ProfileScopedKey.of(subtitleBackgroundOpacityKey))
+    }
+
+    actual fun loadSubtitleFontFamily(): String? =
+        NSUserDefaults.standardUserDefaults.stringForKey(ProfileScopedKey.of(subtitleFontFamilyKey))
+
+    actual fun saveSubtitleFontFamily(fontFamily: String) {
+        NSUserDefaults.standardUserDefaults.setObject(fontFamily, forKey = ProfileScopedKey.of(subtitleFontFamilyKey))
+    }
+
+    actual fun loadSubtitleFontWeight(): String? =
+        NSUserDefaults.standardUserDefaults.stringForKey(ProfileScopedKey.of(subtitleFontWeightKey))
+
+    actual fun saveSubtitleFontWeight(fontWeight: String) {
+        NSUserDefaults.standardUserDefaults.setObject(fontWeight, forKey = ProfileScopedKey.of(subtitleFontWeightKey))
+    }
+
+    actual fun loadSubtitleUseSystemSettings(): Boolean? = loadBoolean(subtitleUseSystemSettingsKey)
+
+    actual fun saveSubtitleUseSystemSettings(enabled: Boolean) {
+        saveBoolean(subtitleUseSystemSettingsKey, enabled)
     }
 
     actual fun loadStreamReuseLastLinkEnabled(): Boolean? {

@@ -31,6 +31,16 @@ internal expect object PlayerSettingsStorage {
     fun saveSubtitleFontSizeSp(fontSizeSp: Int)
     fun loadSubtitleBottomOffset(): Int?
     fun saveSubtitleBottomOffset(bottomOffset: Int)
+    fun loadSubtitleBackgroundColor(): String?
+    fun saveSubtitleBackgroundColor(colorHex: String)
+    fun loadSubtitleBackgroundOpacity(): Float?
+    fun saveSubtitleBackgroundOpacity(opacity: Float)
+    fun loadSubtitleFontFamily(): String?
+    fun saveSubtitleFontFamily(fontFamily: String)
+    fun loadSubtitleFontWeight(): String?
+    fun saveSubtitleFontWeight(fontWeight: String)
+    fun loadSubtitleUseSystemSettings(): Boolean?
+    fun saveSubtitleUseSystemSettings(enabled: Boolean)
     fun loadStreamReuseLastLinkEnabled(): Boolean?
     fun saveStreamReuseLastLinkEnabled(enabled: Boolean)
     fun loadStreamReuseLastLinkCacheHours(): Int?

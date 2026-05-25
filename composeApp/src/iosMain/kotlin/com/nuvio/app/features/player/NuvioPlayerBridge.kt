@@ -54,7 +54,20 @@ interface NuvioPlayerBridge {
         outlineSize: Float,
         fontSize: Float,
         subPos: Int,
+        backColor: String,
+        fontName: String,
+        isBold: Boolean,
     )
+    /**
+     * Returns a JSON string with the user's iOS system subtitle (caption) preferences,
+     * or null if unavailable. Expected keys:
+     *  - "textColorHex" : String "#AARRGGBB"
+     *  - "backColorHex" : String "#AARRGGBB" (alpha already combined with bg opacity)
+     *  - "fontName"     : String? (e.g. "Helvetica Neue")
+     *  - "fontSizeScale": Float (relative multiplier, 1.0 = default)
+     *  - "isBold"       : Boolean
+     */
+    fun readSystemSubtitleStyleJson(): String?
     fun getIsLoading(): Boolean
     fun getIsPlaying(): Boolean
     fun getIsEnded(): Boolean

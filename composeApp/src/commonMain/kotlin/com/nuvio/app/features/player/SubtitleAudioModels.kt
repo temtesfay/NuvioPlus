@@ -38,16 +38,50 @@ enum class SubtitleTab {
     Style,
 }
 
+enum class SubtitleFontFamily(val displayName: String, val mpvFontName: String?) {
+    Auto("Auto", null),
+    SansSerif("Sans", "Helvetica Neue"),
+    Serif("Serif", "Georgia"),
+    Monospace("Mono", "Courier New"),
+}
+
+enum class SubtitleFontWeight(val displayName: String) {
+    Thin("Thin"),
+    Light("Light"),
+    Regular("Regular"),
+    Bold("Bold"),
+    Heavy("Heavy"),
+}
+
 data class SubtitleStyleState(
     val textColor: Color = Color.White,
     val outlineEnabled: Boolean = false,
     val fontSizeSp: Int = 18,
     val bottomOffset: Int = 20,
+    val backgroundColor: Color = Color.Black,
+    val backgroundOpacity: Float = 0f,
+    val fontFamily: SubtitleFontFamily = SubtitleFontFamily.Auto,
+    val fontWeight: SubtitleFontWeight = SubtitleFontWeight.Regular,
+    val useSystemSubtitleSettings: Boolean = false,
 ) {
     companion object {
         val DEFAULT = SubtitleStyleState()
     }
 }
+
+fun SubtitleStyleState.toMpvFontName(): String? {
+    val base = fontFamily.mpvFontName
+    return when (fontWeight) {
+        SubtitleFontWeight.Thin -> if (base == null) "Helvetica Neue UltraLight" else "$base UltraLight"
+        SubtitleFontWeight.Light -> if (base == null) "Helvetica Neue Light" else "$base Light"
+        SubtitleFontWeight.Regular -> base
+        SubtitleFontWeight.Bold -> if (base == null) null else "$base Bold"
+        SubtitleFontWeight.Heavy -> if (base == null) "Arial Black" else "$base Bold"
+    }
+}
+
+fun SubtitleStyleState.toMpvIsBold(): Boolean =
+    fontWeight == SubtitleFontWeight.Bold || fontWeight == SubtitleFontWeight.Heavy
 
 val SubtitleColorSwatches = listOf(
     Color.White,

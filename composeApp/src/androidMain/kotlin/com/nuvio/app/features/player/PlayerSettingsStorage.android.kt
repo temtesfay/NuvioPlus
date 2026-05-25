@@ -340,6 +340,51 @@ actual object PlayerSettingsStorage {
             ?.apply()
     }
 
+    actual fun loadSubtitleBackgroundColor(): String? =
+        preferences?.getString(ProfileScopedKey.of("subtitle_background_color"), null)
+
+    actual fun saveSubtitleBackgroundColor(colorHex: String) {
+        preferences?.edit()?.putString(ProfileScopedKey.of("subtitle_background_color"), colorHex)?.apply()
+    }
+
+    actual fun loadSubtitleBackgroundOpacity(): Float? =
+        preferences?.let { p ->
+            val key = ProfileScopedKey.of("subtitle_background_opacity")
+            if (p.contains(key)) p.getFloat(key, 0f) else null
+        }
+
+    actual fun saveSubtitleBackgroundOpacity(opacity: Float) {
+        preferences?.edit()?.putFloat(ProfileScopedKey.of("subtitle_background_opacity"), opacity)?.apply()
+    }
+
+    actual fun loadSubtitleFontFamily(): String? =
+        preferences?.getString(ProfileScopedKey.of("subtitle_font_family"), null)
+
+    actual fun saveSubtitleFontFamily(fontFamily: String) {
+        preferences?.edit()?.putString(ProfileScopedKey.of("subtitle_font_family"), fontFamily)?.apply()
+    }
+
+    actual fun loadSubtitleFontWeight(): String? =
+        preferences?.getString(ProfileScopedKey.of("subtitle_font_weight"), null)
+
+    actual fun saveSubtitleFontWeight(fontWeight: String) {
+        preferences?.edit()?.putString(ProfileScopedKey.of("subtitle_font_weight"), fontWeight)?.apply()
+    }
+
+    actual fun loadSubtitleUseSystemSettings(): Boolean? =
+        preferences?.let { sharedPreferences ->
+            val key = ProfileScopedKey.of("subtitle_use_system_settings")
+            if (sharedPreferences.contains(key)) {
+                sharedPreferences.getBoolean(key, false)
+            } else {
+                null
+            }
+        }
+
+    actual fun saveSubtitleUseSystemSettings(enabled: Boolean) {
+        preferences?.edit()?.putBoolean(ProfileScopedKey.of("subtitle_use_system_settings"), enabled)?.apply()
+    }
+
     actual fun loadStreamReuseLastLinkEnabled(): Boolean? =
         preferences?.let { sharedPreferences ->
             val key = ProfileScopedKey.of(streamReuseLastLinkEnabledKey)
