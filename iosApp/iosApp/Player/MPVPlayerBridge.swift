@@ -325,6 +325,17 @@ final class MPVPlayerViewController: UIViewController {
     var audioTracks: [TrackInfo] = []
     var subtitleTracks: [TrackInfo] = []
 
+    // MARK: - UIKit Subtitle Overlay
+    // Used when the user picks a custom font or a non-zero background opacity.
+    // MPV's built-in renderer cannot load system fonts or render rounded corners,
+    // so we hide its subtitles (sub-visibility=no) and display them via UIKit.
+
+    private var overlayContainer: UIView?
+    private var overlayBackground: UIView?
+    private var overlayLabel: UILabel?
+    private var overlayBottomConstraint: NSLayoutConstraint?
+    private var isUsingSubtitleOverlay = false
+
     // State (polled from Kotlin every 250ms)
     var isPlayerLoading: Bool = true
     var isPlayerPlaying: Bool = false
@@ -373,6 +384,7 @@ final class MPVPlayerViewController: UIViewController {
 
         setupMpv()
         setupNotifications()
+        setupSubtitleOverlay()
         refreshImmersiveSystemUI()
     }
 
@@ -461,6 +473,7 @@ final class MPVPlayerViewController: UIViewController {
         mpv_observe_property(mpv, 0, "eof-reached", MPV_FORMAT_FLAG)
         mpv_observe_property(mpv, 0, "seeking", MPV_FORMAT_FLAG)
         mpv_observe_property(mpv, 0, "track-list/count", MPV_FORMAT_INT64)
+        mpv_observe_property(mpv, 0, "sub-text", MPV_FORMAT_STRING)
 
         mpv_set_wakeup_callback(mpv, { ctx in
             let vc = unsafeBitCast(ctx, to: MPVPlayerViewController.self)
@@ -712,47 +725,243 @@ final class MPVPlayerViewController: UIViewController {
 
         print("[Nuvio] applySubtitleStyle: text=\(textColor) back=\(backColor) font=\(fontName) bold=\(isBold)")
 
-        // "strip" uses MPV's built-in plain text renderer instead of libass.
-        // Required so dynamic property changes (color, bold, background) take effect.
-        checkError(mpv_set_property_string(mpv, "sub-ass-override", "strip"))
+        // Decide whether to use the UIKit overlay or MPV's built-in renderer.
+        //
+        // UIKit overlay: used when there is a non-transparent background OR a
+        // custom font family.  It can render real iOS system fonts (SF Mono, etc.)
+        // and supports rounded corners + padding — things MPVKit cannot do.
+        //
+        // MPV renderer: used for the default style (Auto font, no background).
+        // MPVKit's bundled libmpv cannot load custom fonts, so we only keep it
+        // for the "plain white text, no background" path.
+        let bgAlpha = overlayAlpha(fromAARRGGBB: backColor)
+        let hasCustomFont = !fontName.isEmpty && fontName != "sans-serif"
+        let useOverlay = bgAlpha > 0.01 || hasCustomFont
 
-        // CRITICAL: enable background-box border style so sub-back-color actually
-        // renders as a solid background box. Without this, MPV uses outline+shadow
-        // by default and sub-back-color has no visible effect.
-        // Try background-box first; if unsupported on this libmpv, fall back to opaque-box.
-        let borderStyleErr = mpv_set_property_string(mpv, "sub-border-style", "background-box")
-        if borderStyleErr < 0 {
-            print("[Nuvio] sub-border-style=background-box rejected (err=\(borderStyleErr)), trying opaque-box")
-            checkError(mpv_set_property_string(mpv, "sub-border-style", "opaque-box"))
+        isUsingSubtitleOverlay = useOverlay
+
+        if useOverlay {
+            // ── UIKit overlay path ──────────────────────────────────────────
+            // Font: reverse the ×3 scaling that Kotlin applies to get back to sp/pt.
+            let ptSize = max(12, CGFloat(fontSize) / 3.0)
+            let uiFont = subtitleFont(postscriptName: fontName, isBold: isBold, pointSize: ptSize)
+            let textUIColor = uiColorRGB(hex: textColor)
+            let bgUIColor   = uiColorAARRGGBB(hex: backColor)
+            // Map subPos (0..150, 100 = bottom) to a bottom inset in points.
+            // subPos=90 (default, bottomOffset=20) → 44 pt from safe-area bottom.
+            let bottomInset = CGFloat(24 + max(0, 100 - subPos) * 2)
+            let showOutlineShadow = outlineSize > 0
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.configureSubtitleOverlay(
+                    textColor: textUIColor,
+                    bgColor: bgUIColor,
+                    font: uiFont,
+                    bottomInset: bottomInset,
+                    showShadow: showOutlineShadow
+                )
+                // Show current subtitle immediately (if any).
+                let text = self.getString("sub-text") ?? ""
+                self.updateSubtitleOverlayText(text)
+            }
+
+            // Suppress MPV's own subtitle rendering while the overlay is active.
+            setStringProperty("sub-visibility", "no")
+
+        } else {
+            // ── MPV native renderer path ────────────────────────────────────
+            DispatchQueue.main.async { [weak self] in
+                self?.updateSubtitleOverlayText("")   // hide overlay
+            }
+            setStringProperty("sub-visibility", "yes")
+
+            checkError(mpv_set_property_string(mpv, "sub-ass-override", "strip"))
+
+            let borderStyleErr = mpv_set_property_string(mpv, "sub-border-style", "background-box")
+            if borderStyleErr < 0 {
+                checkError(mpv_set_property_string(mpv, "sub-border-style", "opaque-box"))
+            }
+
+            checkError(mpv_set_property_string(mpv, "sub-color", textColor))
+            checkError(mpv_set_property_string(mpv, "sub-outline-color", "#000000"))
+
+            var outline = Double(outlineSize)
+            checkError(mpv_set_property(mpv, "sub-outline-size", MPV_FORMAT_DOUBLE, &outline))
+
+            var size = Double(fontSize)
+            checkError(mpv_set_property(mpv, "sub-font-size", MPV_FORMAT_DOUBLE, &size))
+
+            var position = Int64(subPos)
+            checkError(mpv_set_property(mpv, "sub-pos", MPV_FORMAT_INT64, &position))
+
+            checkError(mpv_set_property_string(mpv, "sub-bold", isBold ? "yes" : "no"))
+            checkError(mpv_set_property_string(mpv, "sub-back-color", backColor))
+        }
+    }
+
+    // MARK: - Subtitle overlay setup & helpers
+
+    private func setupSubtitleOverlay() {
+        // Full-screen transparent container (does not intercept touches).
+        let container = UIView()
+        container.isUserInteractionEnabled = false
+        container.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(container)
+        NSLayoutConstraint.activate([
+            container.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            container.topAnchor.constraint(equalTo: view.topAnchor),
+            container.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+
+        // Background pill with rounded corners.
+        let bg = UIView()
+        bg.layer.cornerRadius = 6
+        bg.layer.masksToBounds = true
+        bg.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(bg)
+
+        // Label inside the background.
+        let label = UILabel()
+        label.numberOfLines = 0
+        label.textAlignment = .center
+        label.adjustsFontSizeToFitWidth = false
+        label.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(label)
+
+        // Padding inside the background box.
+        let vPad: CGFloat = 6
+        let hPad: CGFloat = 12
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: bg.topAnchor, constant: vPad),
+            label.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -vPad),
+            label.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: hPad),
+            label.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -hPad),
+        ])
+
+        // Constrain background horizontally (centred, max 92% width).
+        NSLayoutConstraint.activate([
+            bg.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            bg.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, multiplier: 0.92),
+        ])
+
+        // Vertical position: anchored to the safe-area bottom, updated per style.
+        let bottomConstraint = bg.bottomAnchor.constraint(
+            equalTo: container.safeAreaLayoutGuide.bottomAnchor,
+            constant: -44  // default: matches subPos=90
+        )
+        bottomConstraint.isActive = true
+
+        // Start hidden.
+        container.isHidden = true
+
+        overlayContainer      = container
+        overlayBackground     = bg
+        overlayLabel          = label
+        overlayBottomConstraint = bottomConstraint
+    }
+
+    private func configureSubtitleOverlay(
+        textColor: UIColor,
+        bgColor: UIColor,
+        font: UIFont,
+        bottomInset: CGFloat,
+        showShadow: Bool
+    ) {
+        overlayLabel?.textColor = textColor
+        overlayLabel?.font = font
+        overlayBackground?.backgroundColor = bgColor
+
+        if showShadow {
+            overlayLabel?.shadowColor = UIColor.black.withAlphaComponent(0.8)
+            overlayLabel?.shadowOffset = CGSize(width: 1, height: 1)
+        } else {
+            overlayLabel?.shadowColor = .clear
+            overlayLabel?.shadowOffset = .zero
         }
 
-        checkError(mpv_set_property_string(mpv, "sub-color", textColor))
-        checkError(mpv_set_property_string(mpv, "sub-outline-color", "#000000"))
+        overlayBottomConstraint?.constant = -bottomInset
+    }
 
-        var outline = Double(outlineSize)
-        checkError(mpv_set_property(mpv, "sub-outline-size", MPV_FORMAT_DOUBLE, &outline))
+    private func updateSubtitleOverlayText(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            overlayContainer?.isHidden = true
+        } else {
+            overlayLabel?.text = trimmed
+            overlayContainer?.isHidden = false
+        }
+    }
 
-        var size = Double(fontSize)
-        checkError(mpv_set_property(mpv, "sub-font-size", MPV_FORMAT_DOUBLE, &size))
+    // MARK: - Font helpers
 
-        var position = Int64(subPos)
-        checkError(mpv_set_property(mpv, "sub-pos", MPV_FORMAT_INT64, &position))
+    /// Returns a UIFont for subtitle rendering using real iOS system fonts.
+    /// This is what makes SF Mono, Georgia, etc. actually work — unlike MPVKit's
+    /// renderer which has no access to the iOS font loader.
+    private func subtitleFont(postscriptName: String, isBold: Bool, pointSize: CGFloat) -> UIFont {
+        let weight = fontWeight(from: postscriptName, isBold: isBold)
 
-        // Font name — set both sub-font (for subtitles) and osd-font (used in
-        // some strip-renderer code paths). NOTE: MPVKit's bundled libmpv does
-        // not expose a configurable font loader, so this is essentially a hint
-        // and the actual rendered font may not change. Kept here in case a
-        // future MPVKit build adds proper font support.
-        let effectiveFont = fontName.isEmpty ? "sans-serif" : fontName
-        checkError(mpv_set_property_string(mpv, "sub-font", effectiveFont))
-        checkError(mpv_set_property_string(mpv, "osd-font", effectiveFont))
+        // Monospace family → SF Mono (system mono), available on iOS 13+.
+        if postscriptName.hasPrefix("Menlo") {
+            return UIFont.monospacedSystemFont(ofSize: pointSize, weight: weight)
+        }
 
-        // Bold
-        checkError(mpv_set_property_string(mpv, "sub-bold", isBold ? "yes" : "no"))
+        // Serif family → Georgia (widely available on iOS).
+        if postscriptName.hasPrefix("Georgia") {
+            let name = weight >= .bold ? "Georgia-Bold" : "Georgia"
+            return UIFont(name: name, size: pointSize) ?? UIFont.systemFont(ofSize: pointSize, weight: weight)
+        }
 
-        // Background box color (only visible when sub-border-style is opaque-box / background-box)
-        // Format: #AARRGGBB (alpha FIRST), 00=transparent, FF=opaque.
-        checkError(mpv_set_property_string(mpv, "sub-back-color", backColor))
+        // SansSerif / Auto → system font (SF Pro), which always renders correctly.
+        // HelveticaNeue PostScript names map 1:1 but SF Pro looks better on modern iOS.
+        return UIFont.systemFont(ofSize: pointSize, weight: weight)
+    }
+
+    private func fontWeight(from postscriptName: String, isBold: Bool) -> UIFont.Weight {
+        let lower = postscriptName.lowercased()
+        if lower.contains("thin")                          { return .thin }
+        if lower.contains("ultralight") || lower.contains("extralight") { return .ultraLight }
+        if lower.contains("light")                         { return .light }
+        if lower.contains("medium")                        { return .medium }
+        if lower.contains("semibold")                      { return .semibold }
+        if lower.contains("condensedblack") || lower.contains("heavy") { return .heavy }
+        if lower.contains("bold") || isBold                { return .bold }
+        return .regular
+    }
+
+    // MARK: - Colour helpers (for the UIKit overlay)
+
+    /// Parse "#RRGGBB" → UIColor (alpha=1).
+    private func uiColorRGB(hex: String) -> UIColor {
+        let s = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard s.count == 6, let rgb = UInt64(s, radix: 16) else { return .white }
+        return UIColor(
+            red:   CGFloat((rgb >> 16) & 0xFF) / 255,
+            green: CGFloat((rgb >>  8) & 0xFF) / 255,
+            blue:  CGFloat( rgb        & 0xFF) / 255,
+            alpha: 1
+        )
+    }
+
+    /// Parse "#AARRGGBB" (MPV format, alpha first) → UIColor with alpha baked in.
+    private func uiColorAARRGGBB(hex: String) -> UIColor {
+        let s = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard s.count == 8, let argb = UInt64(s, radix: 16) else {
+            return UIColor.black.withAlphaComponent(0)
+        }
+        let a = CGFloat((argb >> 24) & 0xFF) / 255
+        let r = CGFloat((argb >> 16) & 0xFF) / 255
+        let g = CGFloat((argb >>  8) & 0xFF) / 255
+        let b = CGFloat( argb        & 0xFF) / 255
+        return UIColor(red: r, green: g, blue: b, alpha: a)
+    }
+
+    /// Extract just the alpha byte from an "#AARRGGBB" string.
+    private func overlayAlpha(fromAARRGGBB hex: String) -> CGFloat {
+        let s = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard s.count == 8, let argb = UInt64(s, radix: 16) else { return 0 }
+        return CGFloat((argb >> 24) & 0xFF) / 255
     }
 
     func destroyPlayer() {
@@ -761,6 +970,8 @@ final class MPVPlayerViewController: UIViewController {
         pendingLoadRetryWorkItem = nil
         pendingLoadRequest = nil
         clearPlaybackError()
+        isUsingSubtitleOverlay = false
+        overlayContainer?.isHidden = true
         guard let ctx = mpv else { return }
         mpv = nil  // nil first so event loop stops reading
         mpv_terminate_destroy(ctx)
@@ -975,7 +1186,18 @@ final class MPVPlayerViewController: UIViewController {
 
                 switch eventPtr.pointee.event_id {
                 case MPV_EVENT_PROPERTY_CHANGE:
-                    DispatchQueue.main.async { self.updateState() }
+                    // If the overlay is active, grab sub-text on the event thread
+                    // (mpv_get_property_string is thread-safe) so we can update the
+                    // UIKit label on the main thread with zero additional delay.
+                    let overlayText: String? = self.isUsingSubtitleOverlay
+                        ? (self.getString("sub-text") ?? "")
+                        : nil
+                    DispatchQueue.main.async {
+                        self.updateState()
+                        if let text = overlayText {
+                            self.updateSubtitleOverlayText(text)
+                        }
+                    }
                 case MPV_EVENT_FILE_LOADED:
                     DispatchQueue.main.async {
                         self.clearPlaybackError()

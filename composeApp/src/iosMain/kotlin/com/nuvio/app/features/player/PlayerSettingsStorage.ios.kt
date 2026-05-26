@@ -772,6 +772,11 @@ actual object PlayerSettingsStorage {
         loadSubtitleOutlineEnabled()?.let { put(subtitleOutlineEnabledKey, encodeSyncBoolean(it)) }
         loadSubtitleFontSizeSp()?.let { put(subtitleFontSizeSpKey, encodeSyncInt(it)) }
         loadSubtitleBottomOffset()?.let { put(subtitleBottomOffsetKey, encodeSyncInt(it)) }
+        loadSubtitleBackgroundColor()?.let { put(subtitleBackgroundColorKey, encodeSyncString(it)) }
+        loadSubtitleBackgroundOpacity()?.let { put(subtitleBackgroundOpacityKey, encodeSyncFloat(it)) }
+        loadSubtitleFontFamily()?.let { put(subtitleFontFamilyKey, encodeSyncString(it)) }
+        loadSubtitleFontWeight()?.let { put(subtitleFontWeightKey, encodeSyncString(it)) }
+        loadSubtitleUseSystemSettings()?.let { put(subtitleUseSystemSettingsKey, encodeSyncBoolean(it)) }
         loadStreamReuseLastLinkEnabled()?.let { put(streamReuseLastLinkEnabledKey, encodeSyncBoolean(it)) }
         loadStreamReuseLastLinkCacheHours()?.let { put(streamReuseLastLinkCacheHoursKey, encodeSyncInt(it)) }
         loadDecoderPriority()?.let { put(decoderPriorityKey, encodeSyncInt(it)) }
@@ -829,6 +834,11 @@ actual object PlayerSettingsStorage {
         payload.decodeSyncBoolean(subtitleOutlineEnabledKey)?.let(::saveSubtitleOutlineEnabled)
         payload.decodeSyncInt(subtitleFontSizeSpKey)?.let(::saveSubtitleFontSizeSp)
         payload.decodeSyncInt(subtitleBottomOffsetKey)?.let(::saveSubtitleBottomOffset)
+        payload.decodeSyncString(subtitleBackgroundColorKey)?.let(::saveSubtitleBackgroundColor)
+        payload.decodeSyncFloat(subtitleBackgroundOpacityKey)?.let(::saveSubtitleBackgroundOpacity)
+        payload.decodeSyncString(subtitleFontFamilyKey)?.let(::saveSubtitleFontFamily)
+        payload.decodeSyncString(subtitleFontWeightKey)?.let(::saveSubtitleFontWeight)
+        payload.decodeSyncBoolean(subtitleUseSystemSettingsKey)?.let(::saveSubtitleUseSystemSettings)
         payload.decodeSyncBoolean(streamReuseLastLinkEnabledKey)?.let(::saveStreamReuseLastLinkEnabled)
         payload.decodeSyncInt(streamReuseLastLinkCacheHoursKey)?.let(::saveStreamReuseLastLinkCacheHours)
         payload.decodeSyncInt(decoderPriorityKey)?.let(::saveDecoderPriority)

@@ -327,7 +327,7 @@ private fun StyleControlsCard(
                     fontWeight = FontWeight.Medium,
                 )
                 Text(
-                    text = "Experimental — may not apply on this build",
+                    text = "Applies when background opacity > 0 or a specific family is chosen",
                     color = colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                     fontSize = 10.sp,
                 )
