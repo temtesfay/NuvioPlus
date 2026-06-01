@@ -15,6 +15,7 @@ internal const val WatchProgressSourceTraktShowProgress = "trakt_show_progress"
 
 @Serializable
 enum class ContinueWatchingSectionStyle {
+    Card,
     Wide,
     Poster,
     Landscape,
@@ -180,7 +181,7 @@ data class ContinueWatchingItem(
 
 data class ContinueWatchingPreferencesUiState(
     val isVisible: Boolean = true,
-    val style: ContinueWatchingSectionStyle = ContinueWatchingSectionStyle.Wide,
+    val style: ContinueWatchingSectionStyle = ContinueWatchingSectionStyle.Card,
     val upNextFromFurthestEpisode: Boolean = true,
     val useEpisodeThumbnails: Boolean = true,
     val showUnairedNextUp: Boolean = true,
