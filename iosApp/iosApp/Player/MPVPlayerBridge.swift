@@ -116,6 +116,7 @@ final class MPVPlayerBridgeImpl: NSObject, NuvioPlayerBridge {
     func setSubtitleUrl(url: String) { playerVC?.addSubtitleUrl(url) }
     func clearExternalSubtitle() { playerVC?.removeExternalSubtitles() }
     func clearExternalSubtitleAndSelect(trackId: Int32) { playerVC?.removeExternalSubtitlesAndSelect(Int(trackId)) }
+    func setSubtitleDelayMs(delayMs: Int32) { playerVC?.setSubtitleDelayMs(Int(delayMs)) }
     func applySubtitleStyle(textColor: String, backgroundColor: String, outlineColor: String, outlineSize: Float, bold: Bool, fontSize: Float, subPos: Int32, backColor: String, fontName: String, isBold: Bool) {
         playerVC?.applySubtitleStyle(
             textColor: textColor,
@@ -909,6 +910,12 @@ final class MPVPlayerViewController: UIViewController {
         } else {
             setStringProperty("sid", "no")
         }
+    }
+
+    func setSubtitleDelayMs(_ delayMs: Int) {
+        guard mpv != nil else { return }
+        var delaySeconds = Double(delayMs) / 1000.0
+        mpv_set_property(mpv, "sub-delay", MPV_FORMAT_DOUBLE, &delaySeconds)
     }
 
     func applySubtitleStyle(textColor: String, backgroundColor: String = "#FF000000", outlineColor: String = "#FF000000", outlineSize: Float, bold: Bool = false, fontSize: Float, subPos: Int, backColor: String, fontName: String, isBold: Bool) {
