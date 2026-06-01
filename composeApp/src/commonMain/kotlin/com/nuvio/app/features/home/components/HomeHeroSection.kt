@@ -1,9 +1,15 @@
 package com.nuvio.app.features.home.components
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -16,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyListState
@@ -24,18 +31,35 @@ import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import com.nuvio.app.features.home.stableKey
+import com.nuvio.app.features.trailer.TrailerPlaybackSource
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -51,6 +75,7 @@ import coil3.compose.AsyncImage
 import com.nuvio.app.core.format.formatReleaseDateForDisplay
 import com.nuvio.app.features.home.MetaPreview
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.stringResource
@@ -65,9 +90,9 @@ private const val HERO_SCROLL_UP_SCALE_MULTIPLIER = 0.002f
 private const val HERO_SCROLL_MAX_SCALE = 1.3f
 private const val HERO_SWIPE_THRESHOLD_FRACTION = 0.16f
 private const val HERO_SWIPE_VELOCITY_THRESHOLD = 300f
-private const val MOBILE_HERO_VIEWPORT_RATIO = 0.82f
-private const val MOBILE_HERO_MIN_HEIGHT_DP = 360f
-private const val MOBILE_HERO_MAX_HEIGHT_DP = 760f
+private const val MOBILE_HERO_VIEWPORT_RATIO = 0.42f
+private const val MOBILE_HERO_MIN_HEIGHT_DP = 260f
+private const val MOBILE_HERO_MAX_HEIGHT_DP = 360f
 
 internal data class HomeHeroLayout(
     val isTablet: Boolean,
@@ -83,16 +108,50 @@ internal data class HomeHeroLayout(
 @Composable
 fun HomeHeroSection(
     items: List<MetaPreview>,
+    trailerSources: Map<String, TrailerPlaybackSource> = emptyMap(),
     modifier: Modifier = Modifier,
     viewportHeight: Dp? = null,
     mobileBelowSectionHeightHint: Dp? = null,
     listState: LazyListState? = null,
     onItemClick: ((MetaPreview) -> Unit)? = null,
+    onWatchlistClick: ((MetaPreview) -> Unit)? = null,
 ) {
     if (items.isEmpty()) return
 
     val pagerState = rememberPagerState(pageCount = { items.size })
     val coroutineScope = rememberCoroutineScope()
+
+    // Trailer source is derived from the stable-scope pre-warmed map passed in from
+    // HomeRepository.trailerSources — NO async extraction happens here. This prevents
+    // the "coroutine scope left the composition" failure that cancelled all 47+ candidate
+    // extractions every time the catalog re-published a state update.
+    val settledItem = items.getOrNull(pagerState.settledPage)
+    val trailerSource: TrailerPlaybackSource? = settledItem?.let { trailerSources[it.stableKey()] }
+
+    // True once the AVPlayer signals it is buffered and playing.
+    // Reset whenever the settled page changes so the poster is shown while buffering.
+    var trailerReady by remember { mutableStateOf(false) }
+    // Mute state — starts muted (like Prime Video), sticky across slides once toggled.
+    var isMuted by remember { mutableStateOf(true) }
+
+    // Reset ready state on slide change
+    LaunchedEffect(pagerState.settledPage) {
+        trailerReady = false
+    }
+
+    // Auto-advance:
+    //   • no trailer → wait 5 s then advance
+    //   • trailer present → primary advance via onEnded below; 90 s safety net
+    LaunchedEffect(pagerState.settledPage, trailerSource) {
+        if (items.size <= 1) return@LaunchedEffect
+        if (trailerSource == null) {
+            delay(5_000)
+        } else {
+            delay(90_000)
+        }
+        val next = (pagerState.settledPage + 1) % items.size
+        pagerState.animateScrollToPage(next)
+    }
 
     BoxWithConstraints(
         modifier = modifier
@@ -101,8 +160,7 @@ fun HomeHeroSection(
                 pagerState = pagerState,
                 itemCount = items.size,
                 coroutineScope = coroutineScope,
-            )
-            .clip(RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp)),
+            ),
     ) {
         val layout = homeHeroLayout(
             maxWidthDp = maxWidth.value,
@@ -151,7 +209,8 @@ fun HomeHeroSection(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(layout.heroHeight),
+                .height(layout.heroHeight)
+                .clip(RectangleShape),
         ) {
             HorizontalPager(
                 state = pagerState,
@@ -166,6 +225,8 @@ fun HomeHeroSection(
             Box(
                 modifier = Modifier.fillMaxSize(),
             ) {
+                // Poster images — fade out once the trailer is buffered and playing
+                val posterAlpha = if (trailerReady) 0f else 1f
                 visiblePages.forEach { layer ->
                     AsyncImage(
                         model = items[layer.page].banner ?: items[layer.page].poster,
@@ -173,27 +234,73 @@ fun HomeHeroSection(
                         modifier = Modifier
                             .fillMaxSize()
                             .graphicsLayer {
-                                alpha = layer.visibility
+                                alpha = layer.visibility * posterAlpha
                                 translationX = -layer.offset * heroWidthPx * HERO_BACKGROUND_PARALLAX
                                 translationY = heroScrollTranslationY
                                 scaleX = HERO_BACKGROUND_SCALE * heroScrollScale
                                 scaleY = HERO_BACKGROUND_SCALE * heroScrollScale
                             },
-                        alignment = if (layout.isTablet) Alignment.TopCenter else Alignment.Center,
+                        alignment = Alignment.TopCenter,
                         contentScale = ContentScale.Crop,
                     )
                 }
 
+                // Trailer video — always composed when source is available so AVPlayer can buffer.
+                // Visibility is controlled via graphicsLayer alpha: 0.01f while buffering (invisible
+                // but composing), 1f once onReady fires. Same alpha-trick used by HorizontalPager above.
+                val source = trailerSource
+                // key(settledPage) forces HeroVideoSurface to leave and re-enter
+                // composition whenever the slide changes. Without this, Compose reuses
+                // the same UIKitView node and only calls its `update` block — the
+                // UIKit factory is never re-called, so every new bridge's UIView is
+                // never added to the hierarchy. The video layer stays invisible
+                // (laidOut=false, isReady never fires) and the trailer times out on
+                // every slide after the first.
+                if (source != null) key(pagerState.settledPage) {
+                    HeroVideoSurface(
+                        videoUrl = source.videoUrl,
+                        audioUrl = source.audioUrl,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { alpha = if (trailerReady) 1f else 0.01f },
+                        isMuted = isMuted,
+                        onReady = { trailerReady = true },
+                        onError = {
+                            // Advance immediately on error/timeout — trailerSource is
+                            // derived from the Repository map (not local mutable state)
+                            // so we just skip to the next slide rather than nulling it.
+                            trailerReady = false
+                            coroutineScope.launch {
+                                if (items.size > 1) {
+                                    val next = (pagerState.settledPage + 1) % items.size
+                                    pagerState.animateScrollToPage(next)
+                                }
+                            }
+                        },
+                        onEnded = {
+                            trailerReady = false
+                            coroutineScope.launch {
+                                if (items.size > 1) {
+                                    val next = (pagerState.settledPage + 1) % items.size
+                                    pagerState.animateScrollToPage(next)
+                                }
+                            }
+                        },
+                    )
+                } // end key(settledPage)
+
+                // Gradient — transparent top, gentle darkening from 50% down
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
-                                colors = listOf(
-                                    MaterialTheme.colorScheme.background.copy(alpha = 0.02f),
-                                    MaterialTheme.colorScheme.background.copy(alpha = 0.12f),
-                                    MaterialTheme.colorScheme.background.copy(alpha = 0.34f),
-                                    MaterialTheme.colorScheme.background.copy(alpha = 0.78f),
+                                colorStops = arrayOf(
+                                    0.00f to MaterialTheme.colorScheme.background.copy(alpha = 0.00f),
+                                    0.45f to MaterialTheme.colorScheme.background.copy(alpha = 0.00f),
+                                    0.68f to MaterialTheme.colorScheme.background.copy(alpha = 0.18f),
+                                    0.85f to MaterialTheme.colorScheme.background.copy(alpha = 0.52f),
+                                    1.00f to MaterialTheme.colorScheme.background.copy(alpha = 0.85f),
                                 ),
                             ),
                         ),
@@ -214,6 +321,7 @@ fun HomeHeroSection(
                         ),
                 )
 
+                // Content column — left-aligned
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -222,13 +330,13 @@ fun HomeHeroSection(
                             horizontal = layout.contentHorizontalPadding,
                             vertical = layout.contentVerticalPadding,
                         ),
-                    horizontalAlignment = if (layout.isTablet) Alignment.Start else Alignment.CenterHorizontally,
+                    horizontalAlignment = Alignment.Start,
                 ) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth(layout.contentWidthFraction)
                             .widthIn(max = layout.contentMaxWidth),
-                        contentAlignment = if (layout.isTablet) Alignment.CenterStart else Alignment.Center,
+                        contentAlignment = Alignment.CenterStart,
                     ) {
                         visiblePages.forEach { layer ->
                             Box(
@@ -246,52 +354,103 @@ fun HomeHeroSection(
                         }
                     }
 
-                    if (!layout.isTablet) {
-                        Spacer(modifier = Modifier.height(14.dp))
-                        Surface(
-                            modifier = Modifier
-                                .clickable(enabled = onItemClick != null) {
-                                    onItemClick?.invoke(currentItem)
-                                },
-                            color = MaterialTheme.colorScheme.onBackground,
-                            contentColor = MaterialTheme.colorScheme.background,
-                            shape = RoundedCornerShape(40.dp),
-                        ) {
-                            Text(
-                                text = stringResource(Res.string.home_view_details),
-                                modifier = Modifier.padding(horizontal = 28.dp, vertical = 12.dp),
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                            )
-                        }
-                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    HeroActionButtons(
+                        item = currentItem,
+                        onWatchClick = onItemClick,
+                        onWatchlistClick = onWatchlistClick,
+                        onInfoClick = onItemClick,
+                    )
 
+                    // Page-indicator dots — always centred regardless of content alignment
                     if (items.size > 1) {
-                        Spacer(modifier = Modifier.height(if (layout.isTablet) 14.dp else 12.dp))
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                        Spacer(modifier = Modifier.height(if (layout.isTablet) 14.dp else 8.dp))
+                        Box(
+                            modifier = Modifier.fillMaxWidth(),
+                            contentAlignment = Alignment.Center,
                         ) {
-                            items.forEachIndexed { index, _ ->
-                                val activeFraction = heroPageVisibility(pagerState, index)
-                                Box(
-                                    modifier = Modifier
-                                        .clickable {
-                                            coroutineScope.launch {
-                                                pagerState.animateScrollToPage(index)
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                items.forEachIndexed { index, _ ->
+                                    val activeFraction = heroPageVisibility(pagerState, index)
+                                    Box(
+                                        modifier = Modifier
+                                            .clickable {
+                                                coroutineScope.launch {
+                                                    pagerState.animateScrollToPage(index)
+                                                }
                                             }
-                                        }
-                                        .clip(CircleShape)
-                                        .background(MaterialTheme.colorScheme.onBackground)
-                                        .graphicsLayer {
-                                            alpha = 0.35f + (0.57f * activeFraction)
-                                        }
-                                        .width(8.dp + (24.dp * activeFraction))
-                                        .height(8.dp),
-                                )
+                                            .clip(CircleShape)
+                                            .background(Color.White)
+                                            .graphicsLayer {
+                                                alpha = 0.35f + (0.57f * activeFraction)
+                                            }
+                                            .width(6.dp + (18.dp * activeFraction))
+                                            .height(6.dp),
+                                    )
+                                }
                             }
                         }
                     }
+                }
+
+                // Mute / unmute button — visible in top-right when trailer is playing.
+                // statusBarsPadding() keeps it clear of the Dynamic Island / notch.
+                if (trailerReady) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .statusBarsPadding()
+                            .padding(
+                                top = if (layout.isTablet) 16.dp else 12.dp,
+                                end = if (layout.isTablet) 20.dp else 16.dp,
+                            )
+                            .size(36.dp)
+                            .clickable { isMuted = !isMuted },
+                        color = Color.Black.copy(alpha = 0.50f),
+                        contentColor = Color.White,
+                        shape = CircleShape,
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = if (isMuted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                                contentDescription = if (isMuted) "Unmute trailer" else "Mute trailer",
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                }
+
+                // Side prev / next chevron buttons (tablet / Mac only)
+                if (layout.isTablet && items.size > 1) {
+                    HeroNavButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                pagerState.animateScrollToPage(
+                                    (pagerState.currentPage - 1).coerceAtLeast(0)
+                                )
+                            }
+                        },
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .padding(start = 16.dp),
+                        isNext = false,
+                    )
+                    HeroNavButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                pagerState.animateScrollToPage(
+                                    (pagerState.currentPage + 1).coerceAtMost(items.size - 1)
+                                )
+                            }
+                        },
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 16.dp),
+                        isNext = true,
+                    )
                 }
             }
         }
@@ -324,8 +483,7 @@ fun HomeHeroReservedSpace(
 ) {
     BoxWithConstraints(
         modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp)),
+            .fillMaxWidth(),
     ) {
         val layout = homeHeroLayout(
             maxWidthDp = maxWidth.value,
@@ -347,9 +505,12 @@ private fun HeroContentBlock(
     layout: HomeHeroLayout,
     onItemClick: ((MetaPreview) -> Unit)?,
 ) {
+    val titleHoverSource = remember { MutableInteractionSource() }
+    val isTitleHovered by titleHoverSource.collectIsHoveredAsState()
+
     Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = if (layout.isTablet) Alignment.Start else Alignment.CenterHorizontally,
+        horizontalAlignment = Alignment.Start,
     ) {
         if (item.logo != null) {
             AsyncImage(
@@ -358,10 +519,11 @@ private fun HeroContentBlock(
                 modifier = Modifier
                     .fillMaxWidth(layout.logoWidthFraction)
                     .aspectRatio(2.6f)
+                    .hoverable(titleHoverSource)
                     .clickable(enabled = onItemClick != null) {
                         onItemClick?.invoke(item)
                     },
-                alignment = if (layout.isTablet) Alignment.CenterStart else Alignment.Center,
+                alignment = Alignment.CenterStart,
                 contentScale = ContentScale.Fit,
             )
         } else {
@@ -369,33 +531,44 @@ private fun HeroContentBlock(
                 text = item.name,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .hoverable(titleHoverSource)
                     .clickable(enabled = onItemClick != null) {
                         onItemClick?.invoke(item)
                     },
-                style = if (layout.isTablet) {
-                    MaterialTheme.typography.displaySmall
-                } else {
-                    MaterialTheme.typography.displaySmall
-                },
+                style = MaterialTheme.typography.displaySmall,
                 color = MaterialTheme.colorScheme.onBackground,
                 fontWeight = FontWeight.Black,
-                textAlign = if (layout.isTablet) TextAlign.Start else TextAlign.Center,
+                textAlign = TextAlign.Start,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        // Description shown on hover (desktop / Mac Catalyst)
+        AnimatedVisibility(
+            visible = isTitleHovered && !item.description.isNullOrBlank(),
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            Column {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = item.description ?: "",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White.copy(alpha = 0.85f),
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = if (layout.isTablet) {
-                Arrangement.spacedBy(8.dp, Alignment.Start)
-            } else {
-                Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
-            },
+            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.Start),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            HeroMetaText(text = item.type.replaceFirstChar(Char::uppercase))
+            HeroTypeBadge(text = item.type.uppercase())
             item.genres.firstOrNull()?.let { genre ->
                 HeroMetaDot()
                 HeroMetaText(text = genre)
@@ -403,6 +576,10 @@ private fun HeroContentBlock(
             item.releaseInfo?.takeIf { it.isNotBlank() }?.let { info ->
                 HeroMetaDot()
                 HeroMetaText(text = formatReleaseDateForDisplay(info))
+            }
+            item.imdbRating?.takeIf { it.isNotBlank() }?.let { rating ->
+                HeroMetaDot()
+                HeroMetaText(text = "IMDb $rating")
             }
         }
     }
@@ -428,32 +605,32 @@ internal fun homeHeroLayout(
     when {
         maxWidthDp >= 1200f -> HomeHeroLayout(
             isTablet = true,
-            heroHeight = (maxWidthDp * 0.42f).dp.coerceIn(360.dp, 440.dp),
+            heroHeight = (maxWidthDp * 0.50f).dp.coerceIn(480.dp, 620.dp),
             contentMaxWidth = 640.dp,
-            contentWidthFraction = 0.56f,
+            contentWidthFraction = 0.50f,
             contentHorizontalPadding = 56.dp,
-            contentVerticalPadding = 22.dp,
-            bottomFadeHeight = 190.dp,
-            logoWidthFraction = 0.58f,
+            contentVerticalPadding = 28.dp,
+            bottomFadeHeight = 260.dp,
+            logoWidthFraction = 0.52f,
         )
         maxWidthDp >= 840f -> HomeHeroLayout(
             isTablet = true,
-            heroHeight = (maxWidthDp * 0.46f).dp.coerceIn(340.dp, 420.dp),
+            heroHeight = (maxWidthDp * 0.54f).dp.coerceIn(440.dp, 580.dp),
             contentMaxWidth = 560.dp,
-            contentWidthFraction = 0.62f,
+            contentWidthFraction = 0.58f,
             contentHorizontalPadding = 40.dp,
-            contentVerticalPadding = 20.dp,
-            bottomFadeHeight = 180.dp,
-            logoWidthFraction = 0.56f,
+            contentVerticalPadding = 24.dp,
+            bottomFadeHeight = 240.dp,
+            logoWidthFraction = 0.54f,
         )
         maxWidthDp >= 600f -> HomeHeroLayout(
             isTablet = true,
-            heroHeight = (maxWidthDp * 0.58f).dp.coerceIn(320.dp, 380.dp),
+            heroHeight = (maxWidthDp * 0.62f).dp.coerceIn(400.dp, 500.dp),
             contentMaxWidth = 520.dp,
             contentWidthFraction = 0.72f,
             contentHorizontalPadding = 32.dp,
-            contentVerticalPadding = 18.dp,
-            bottomFadeHeight = 170.dp,
+            contentVerticalPadding = 20.dp,
+            bottomFadeHeight = 210.dp,
             logoWidthFraction = 0.54f,
         )
         else -> HomeHeroLayout(
@@ -465,10 +642,10 @@ internal fun homeHeroLayout(
             ),
             contentMaxWidth = 480.dp,
             contentWidthFraction = 1f,
-            contentHorizontalPadding = 24.dp,
-            contentVerticalPadding = 16.dp,
-            bottomFadeHeight = 220.dp,
-            logoWidthFraction = 0.62f,
+            contentHorizontalPadding = 16.dp,
+            contentVerticalPadding = 10.dp,
+            bottomFadeHeight = 120.dp,
+            logoWidthFraction = 0.50f,
         )
     }
 
@@ -478,7 +655,7 @@ private fun mobileHeroHeight(
     mobileBelowSectionHeightHintDp: Float?,
 ): Dp {
     val viewportDrivenHeight = viewportHeightDp?.let { (it * MOBILE_HERO_VIEWPORT_RATIO).dp }
-    val widthFallbackHeight = (maxWidthDp * 1.16f).dp
+    val widthFallbackHeight = (maxWidthDp * 0.80f).dp
     val baseHeight = viewportDrivenHeight ?: widthFallbackHeight
 
     val cappedHeight = if (viewportHeightDp != null && mobileBelowSectionHeightHintDp != null) {
@@ -499,6 +676,127 @@ private fun HeroMetaDot() {
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)),
     )
+}
+
+@Composable
+private fun HeroTypeBadge(text: String) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(Color.White.copy(alpha = 0.15f))
+            .padding(horizontal = 6.dp, vertical = 3.dp),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onBackground,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun HeroActionButtons(
+    item: MetaPreview,
+    onWatchClick: ((MetaPreview) -> Unit)?,
+    onWatchlistClick: ((MetaPreview) -> Unit)?,
+    onInfoClick: ((MetaPreview) -> Unit)?,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Surface(
+            modifier = Modifier.clickable(enabled = onWatchClick != null) { onWatchClick?.invoke(item) },
+            color = Color.White,
+            contentColor = Color.Black,
+            shape = RoundedCornerShape(6.dp),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Text(
+                    text = stringResource(Res.string.home_hero_watch_now),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+
+        if (onWatchlistClick != null) {
+            Surface(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clickable { onWatchlistClick(item) },
+                color = Color.White.copy(alpha = 0.18f),
+                contentColor = Color.White,
+                shape = CircleShape,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = stringResource(Res.string.home_hero_add_to_watchlist),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+
+        if (onInfoClick != null) {
+            Surface(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clickable { onInfoClick(item) },
+                color = Color.White.copy(alpha = 0.18f),
+                contentColor = Color.White,
+                shape = CircleShape,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Filled.Info,
+                        contentDescription = stringResource(Res.string.home_hero_more_info),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HeroNavButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    isNext: Boolean,
+) {
+    Surface(
+        modifier = modifier
+            .size(48.dp)
+            .clickable(onClick = onClick),
+        color = Color.Black.copy(alpha = 0.45f),
+        contentColor = Color.White,
+        shape = CircleShape,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = if (isNext) {
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight
+                } else {
+                    Icons.AutoMirrored.Filled.KeyboardArrowLeft
+                },
+                contentDescription = if (isNext) "Next" else "Previous",
+                modifier = Modifier.size(28.dp),
+            )
+        }
+    }
 }
 
 private fun heroBackgroundScrollScale(scrollOffsetPx: Float): Float {

@@ -11,7 +11,7 @@
   [![License][license-shield]][license-url]
 
   <p>
-    A modern media hub for Android and iOS built with Kotlin Multiplatform and Compose Multiplatform.
+    A modern media hub for Android, iOS, and macOS built with Kotlin Multiplatform and Compose Multiplatform.
     <br />
     Stremio addon ecosystem • Cross-platform
   </p>
@@ -20,9 +20,9 @@
 
 ## About
 
-Nuvio is the current Kotlin Multiplatform rewrite of the original React Native app. It delivers a shared Compose UI for Android and iOS while keeping the playback-focused experience, collection tools, watch progress flows, downloads, and Stremio addon ecosystem integration that shaped the earlier app.
+Nuvio is the current Kotlin Multiplatform rewrite of the original React Native app. It delivers a shared Compose UI for Android, iOS, and macOS (via Mac Catalyst) while keeping the playback-focused experience, collection tools, watch progress flows, downloads, and Stremio addon ecosystem integration that shaped the earlier app.
 
-The mobile app is built from a single shared codebase in [composeApp](./composeApp), with native platform entry points for Android and iOS.
+The app is built from a single shared codebase in [composeApp](./composeApp), with native platform entry points for Android and iOS/macOS.
 
 ## Installation
 
@@ -32,7 +32,11 @@ Download the latest Android build from [GitHub Releases](https://github.com/Nuvi
 
 ### iOS
 
-- [TestFlight](https://testflight.apple.com/join/u4y7MHK9)
+- [TestFlight](https://testflight.apple.com/join/u4y7MHK9) (Includes macOS Catalyst app for Apple Silicon/Intel Macs)
+
+### macOS
+
+Nuvio runs natively on macOS via Mac Catalyst. Build from source using Xcode with the `iosApp` scheme targeting **My Mac (Designed for iPad)**. Mac-specific features include cursor auto-hide in the player, trackpad/mouse-wheel scrolling, and enlarged landscape poster cards.
 
 ## Development
 
@@ -72,11 +76,11 @@ For comprehensive legal information, including our full disclaimer, third-party 
 
 ## Built With
 
-- Kotlin Multiplatform
-- Compose Multiplatform
-- Kotlin
-- AndroidX Media3
-- AVFoundation and native iOS integrations
+- Kotlin Multiplatform + Compose Multiplatform 1.11
+- AndroidX Media3 (Android playback)
+- MPV + MoltenVK / Vulkan (iOS & macOS playback)
+- AVFoundation / VideoToolbox (hardware decode on iOS & macOS)
+- Mac Catalyst (native macOS app from the iOS codebase)
 
 ## Star History
 

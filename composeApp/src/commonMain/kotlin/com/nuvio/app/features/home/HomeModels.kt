@@ -18,6 +18,11 @@ data class MetaPreview(
     val voteCount: Int? = null,
     val imdbRating: String? = null,
     val genres: List<String> = emptyList(),
+    val youtubeTrailerKey: String? = null,
+    // Backup YouTube IDs from Stremio addon meta. If the primary key (above)
+    // fails to extract a playable URL (geo-block, age-gate, signature issue),
+    // the hero tries these in order before giving up on the slide.
+    val alternateTrailerKeys: List<String> = emptyList(),
 )
 
 fun MetaPreview.stableKey(): String = "$type:$id"

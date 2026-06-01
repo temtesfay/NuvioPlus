@@ -367,6 +367,8 @@ final class RootComposeViewController: UIViewController, UITabBarDelegate {
         guard let tab = NativeTab(tag: item.tag) else { return }
         UserDefaults.standard.set(tab.rawValue, forKey: Self.nativeSelectedTabKey)
         NativeTabBridgeKt.nativeTabSelect(tabName: tab.rawValue)
+        // Note: scroll-view patching for Mac Catalyst is handled by the persistent
+        // 1 Hz timer in ContentView.configureMacWindow — no manual re-patch needed.
     }
 
     override var childForHomeIndicatorAutoHidden: UIViewController? {
@@ -401,6 +403,35 @@ final class RootComposeViewController: UIViewController, UITabBarDelegate {
         setNeedsUpdateOfHomeIndicatorAutoHidden()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setNeedsStatusBarAppearanceUpdate()
+    }
+
+    // MARK: - Hardware keyboard shortcuts for the player
+    //
+    // Compose Multiplatform's onKeyEvent does not fire for hardware keyboard events
+    // on iOS/Mac Catalyst because UIKit's responder chain sits above Compose's focus
+    // system. Instead we intercept here and post NSNotifications that the Kotlin
+    // player observes — the same pattern used for cursor-show-controls.
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var handled = false
+        for press in presses {
+            guard let key = press.key else { continue }
+            switch key.keyCode {
+            case .keyboardSpacebar:
+                NotificationCenter.default.post(name: .nuvioPlayerKeyPlayPause, object: nil)
+                handled = true
+            case .keyboardLeftArrow:
+                NotificationCenter.default.post(name: .nuvioPlayerKeySeekBackward, object: nil)
+                handled = true
+            case .keyboardRightArrow:
+                NotificationCenter.default.post(name: .nuvioPlayerKeySeekForward, object: nil)
+                handled = true
+            default:
+                break
+            }
+        }
+        if !handled {
+            super.pressesBegan(presses, with: event)
+        }
     }
 
     private func immersiveController(in controller: UIViewController?) -> UIViewController? {
@@ -541,7 +572,7 @@ final class RootComposeViewController: UIViewController, UITabBarDelegate {
         tabBar.tintColor = accent
         tabBar.unselectedItemTintColor = unselected
 
-        let appearance = tabBar.standardAppearance.copy() as! UITabBarAppearance
+        let appearance = tabBar.standardAppearance.copy()
         appearance.stackedLayoutAppearance.normal.iconColor = unselected
         appearance.stackedLayoutAppearance.normal.titleTextAttributes = [.foregroundColor: unselected]
         appearance.stackedLayoutAppearance.selected.iconColor = accent
@@ -634,6 +665,8 @@ struct ComposeView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIViewController {
         // Register MPV player bridge before Compose initializes
         NuvioPlayerRegistration.register()
+        // Register hero trailer player bridge
+        NuvioHeroPlayerRegistration.register()
         
         let controller = MainViewControllerKt.MainViewController()
         controller.view.backgroundColor = UIColor(red: 0.008, green: 0.016, blue: 0.016, alpha: 1.0)
@@ -647,5 +680,67 @@ struct ContentView: View {
     var body: some View {
         ComposeView()
             .ignoresSafeArea()
+            #if targetEnvironment(macCatalyst)
+            .onAppear { ContentView.configureMacWindow() }
+            #endif
     }
+
+    #if targetEnvironment(macCatalyst)
+    private static func configureMacWindow() {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { return }
+        // Hide title bar for a full-canvas streaming UI
+        scene.titlebar?.titleVisibility = .hidden
+        scene.titlebar?.toolbar = nil
+        // Set sensible default and minimum window size
+        scene.sizeRestrictions?.minimumSize = CGSize(width: 960, height: 600)
+
+        // Patch all pan gesture recognizers and scroll views to accept trackpad
+        // continuous events (.continuous) and mouse-wheel events (.discrete).
+        // Compose Multiplatform creates gesture recognizers lazily as content loads
+        // and does not set allowedScrollTypesMask on Mac Catalyst, so patching once
+        // at startup misses recognizers born later (new screens, lazy lists, etc.).
+        //
+        // Strategy: patch immediately, then run a persistent 1 Hz background timer
+        // for the lifetime of the app. Each pass is a cheap DFS of the view tree
+        // and skips anything already correctly configured.
+        scene.windows.forEach { patchScrollViews(in: $0) }
+
+        // Persistent patch timer — fires every 1 s, catches any recognizer that
+        // Compose creates after the initial pass or after in-app navigation.
+        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak scene] _ in
+            guard let scene else { return }
+            scene.windows.forEach { patchScrollViews(in: $0) }
+        }
+    }
+
+    /// Recursively walks `view` and its descendants, enabling trackpad/wheel scroll
+    /// types on every UIScrollView and UIPanGestureRecognizer found.
+    /// Also tunes deceleration rate for smoother momentum on Mac Catalyst.
+    fileprivate static func patchScrollViews(in view: UIView) {
+        if let scrollView = view as? UIScrollView {
+            scrollView.panGestureRecognizer.allowedScrollTypesMask = [.continuous, .discrete]
+            // Slightly higher deceleration rate than the default (.normal = 0.998)
+            // gives more scroll momentum on trackpad, reducing the "stops too quickly"
+            // feeling on the home page and other tall LazyColumn screens.
+            if scrollView.decelerationRate.rawValue < 0.9985 {
+                scrollView.decelerationRate = UIScrollView.DecelerationRate(rawValue: 0.9985)
+            }
+        }
+        // Patch standalone pan gesture recognizers too (Compose uses these for custom
+        // scroll containers that don't subclass UIScrollView).
+        for gesture in view.gestureRecognizers ?? [] {
+            if let pan = gesture as? UIPanGestureRecognizer {
+                pan.allowedScrollTypesMask = [.continuous, .discrete]
+            }
+        }
+        view.subviews.forEach { patchScrollViews(in: $0) }
+    }
+    #endif
+}
+
+// MARK: - Player keyboard notification names
+private extension Notification.Name {
+    static let nuvioPlayerKeyPlayPause    = Notification.Name("NuvioPlayerKeyPlayPause")
+    static let nuvioPlayerKeySeekBackward = Notification.Name("NuvioPlayerKeySeekBackward")
+    static let nuvioPlayerKeySeekForward  = Notification.Name("NuvioPlayerKeySeekForward")
 }

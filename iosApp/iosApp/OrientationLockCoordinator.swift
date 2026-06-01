@@ -1,5 +1,6 @@
 import UIKit
 import UserNotifications
+import AVFoundation
 import ComposeApp
 
 private let lockPlayerToLandscapeNotification = Notification.Name("NuvioPlayerLockLandscape")
@@ -13,6 +14,22 @@ final class OrientationLockAppDelegate: NSObject, UIApplicationDelegate, UNUserN
         OrientationLockCoordinator.shared.start()
         DownloadsLiveActivityManager.shared.start()
         UNUserNotificationCenter.current().delegate = self
+        #if targetEnvironment(macCatalyst)
+        // Activate AVAudioSession before any player code runs so that the
+        // audiounit backend gets a valid channel count from the session when
+        // it initializes (rather than 0, which caused an indefinite hang).
+        // This must happen on the main thread early in the app lifecycle —
+        // doing it in viewDidLoad was too late and risked a race with the
+        // audiounit init thread.
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .moviePlayback)
+            try session.setActive(true)
+            print("[Audio] Mac Catalyst audio session ready: \(session.outputNumberOfChannels)ch @ \(session.sampleRate) Hz")
+        } catch {
+            print("[Audio] Mac Catalyst audio session setup failed: \(error)")
+        }
+        #endif
         return true
     }
 
@@ -20,7 +37,11 @@ final class OrientationLockAppDelegate: NSObject, UIApplicationDelegate, UNUserN
         _ application: UIApplication,
         supportedInterfaceOrientationsFor window: UIWindow?
     ) -> UIInterfaceOrientationMask {
-        OrientationLockCoordinator.shared.supportedOrientations
+        #if targetEnvironment(macCatalyst)
+        return .all
+        #else
+        return OrientationLockCoordinator.shared.supportedOrientations
+        #endif
     }
 
     func application(
@@ -89,6 +110,9 @@ final class OrientationLockCoordinator {
     }
 
     private func requestOrientationUpdate(for mask: UIInterfaceOrientationMask, forceRotate: Bool) {
+        #if targetEnvironment(macCatalyst)
+        return
+        #else
         if #available(iOS 16.0, *) {
             let preferences = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: mask)
             UIApplication.shared.connectedScenes
@@ -112,6 +136,7 @@ final class OrientationLockCoordinator {
             }
             UIViewController.attemptRotationToDeviceOrientation()
         }
+        #endif
     }
 
     private var preferredLandscapeOrientation: UIInterfaceOrientation {

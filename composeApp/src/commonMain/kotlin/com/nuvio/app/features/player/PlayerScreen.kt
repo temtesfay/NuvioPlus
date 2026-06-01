@@ -204,6 +204,10 @@ fun PlayerScreen(
         val gestureController = rememberPlayerGestureController()
         var controlsVisible by rememberSaveable { mutableStateOf(true) }
         var playerControlsLocked by rememberSaveable { mutableStateOf(false) }
+        WatchForMacCursorShowControls(onShow = {
+            if (!playerControlsLocked) controlsVisible = true
+        })
+        SyncMacCursorWithControls(controlsVisible = controlsVisible)
         // Active playback state (mutable to support source/episode switching)
         var activeSourceUrl by rememberSaveable { mutableStateOf(sourceUrl) }
         var activeSourceAudioUrl by rememberSaveable { mutableStateOf(sourceAudioUrl) }
@@ -734,6 +738,15 @@ fun PlayerScreen(
                 offsetMs < 0L -> showSeekFeedback(PlayerSeekDirection.Backward, abs(offsetMs))
             }
         }
+
+        // Hardware keyboard shortcuts — handled via UIKit pressesBegan on iOS/Mac Catalyst
+        // (Compose's onKeyEvent does not fire for hardware keys on iOS) and via
+        // Compose's own key event system on Android (see Box modifier below).
+        WatchForPlayerKeyboardShortcuts(
+            onPlayPause = ::togglePlayback,
+            onSeekBackward = { seekBy(-PlayerDoubleTapSeekStepMs) },
+            onSeekForward = { seekBy(PlayerDoubleTapSeekStepMs) },
+        )
 
         fun handleDoubleTapSeek(direction: PlayerSeekDirection) {
             val currentPositionMs = playbackSnapshot.positionMs.coerceAtLeast(0L)

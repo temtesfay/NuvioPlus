@@ -1,5 +1,7 @@
 package com.nuvio.app
 
+import platform.Foundation.NSProcessInfo
+import platform.Foundation.isMacCatalystApp
 import platform.UIKit.UIDevice
 
 class IOSPlatform: Platform {
@@ -9,3 +11,4 @@ class IOSPlatform: Platform {
 actual fun getPlatform(): Platform = IOSPlatform()
 
 internal actual val isIos: Boolean = true
+internal actual val isMacCatalyst: Boolean = NSProcessInfo.processInfo.isMacCatalystApp()

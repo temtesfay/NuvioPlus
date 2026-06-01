@@ -29,3 +29,17 @@ expect fun ManagePlayerPictureInPicture(
 
 @Composable
 expect fun rememberPlayerGestureController(): PlayerGestureController?
+
+@Composable
+expect fun WatchForMacCursorShowControls(onShow: () -> Unit)
+
+@Composable
+expect fun WatchForPlayerKeyboardShortcuts(
+    onPlayPause: () -> Unit,
+    onSeekBackward: () -> Unit,
+    onSeekForward: () -> Unit,
+)
+
+/** Posts a platform signal to hide the cursor when [controlsVisible] becomes false. */
+@Composable
+expect fun SyncMacCursorWithControls(controlsVisible: Boolean)

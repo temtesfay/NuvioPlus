@@ -1098,6 +1098,30 @@ object TmdbMetadataService {
         return result
     }
 
+    /**
+     * Returns the YouTube video key for the best available trailer for a hero card.
+     * Returns null if TMDB is not configured, the id can't be resolved, or no trailer is found.
+     * Designed to be called concurrently for multiple hero items; results are cached.
+     */
+    suspend fun fetchHeroTrailerKey(
+        id: String,
+        type: String,
+        language: String,
+    ): String? {
+        val apiKey = TmdbSettingsRepository.snapshot().apiKey.trim().takeIf(String::isNotBlank)
+            ?: return null
+        val tmdbType = normalizeMetaType(type)
+        val tmdbIdStr = TmdbService.ensureTmdbId(id, tmdbType) ?: return null
+        val tmdbId = tmdbIdStr.toIntOrNull() ?: return null
+        val trailers = fetchTrailers(tmdbId = tmdbId, mediaType = tmdbType, language = language)
+        // Prefer official Trailer type, then fall back to any YouTube entry
+        return trailers
+            .firstOrNull { it.type.equals("Trailer", ignoreCase = true) && it.official }
+            ?.key
+            ?: trailers.firstOrNull { it.type.equals("Trailer", ignoreCase = true) }?.key
+            ?: trailers.firstOrNull()?.key
+    }
+
     private suspend fun fetchTrailers(
         tmdbId: Int,
         mediaType: String,

@@ -109,6 +109,7 @@ fun HomeScreen(
 
     val addonsUiState by AddonRepository.uiState.collectAsStateWithLifecycle()
     val homeUiState by HomeRepository.uiState.collectAsStateWithLifecycle()
+    val heroTrailerSources by HomeRepository.trailerSources.collectAsStateWithLifecycle()
     val homeSettingsUiState by remember {
         HomeCatalogSettingsRepository.snapshot()
         HomeCatalogSettingsRepository.uiState
@@ -630,6 +631,7 @@ fun HomeScreen(
 
                         homeUiState.heroItems.isNotEmpty() -> HomeHeroSection(
                             items = homeUiState.heroItems,
+                            trailerSources = heroTrailerSources,
                             modifier = Modifier,
                             viewportHeight = maxHeight,
                             mobileBelowSectionHeightHint = mobileHeroBelowSectionHeightHint,
@@ -655,7 +657,7 @@ fun HomeScreen(
                                 style = continueWatchingPreferences.style,
                                 useEpisodeThumbnails = continueWatchingPreferences.useEpisodeThumbnails,
                                 blurNextUp = continueWatchingPreferences.blurNextUp,
-                                modifier = Modifier.padding(bottom = 12.dp),
+                                modifier = Modifier.padding(bottom = 20.dp),
                                 sectionPadding = homeSectionPadding,
                                 layout = continueWatchingLayout,
                                 onItemClick = onContinueWatchingClick,
@@ -680,7 +682,7 @@ fun HomeScreen(
                                 style = continueWatchingPreferences.style,
                                 useEpisodeThumbnails = continueWatchingPreferences.useEpisodeThumbnails,
                                 blurNextUp = continueWatchingPreferences.blurNextUp,
-                                modifier = Modifier.padding(bottom = 12.dp),
+                                modifier = Modifier.padding(bottom = 20.dp),
                                 sectionPadding = homeSectionPadding,
                                 layout = continueWatchingLayout,
                                 onItemClick = onContinueWatchingClick,
@@ -728,7 +730,7 @@ fun HomeScreen(
                                 style = continueWatchingPreferences.style,
                                 useEpisodeThumbnails = continueWatchingPreferences.useEpisodeThumbnails,
                                 blurNextUp = continueWatchingPreferences.blurNextUp,
-                                modifier = Modifier.padding(bottom = 12.dp),
+                                modifier = Modifier.padding(bottom = 20.dp),
                                 sectionPadding = homeSectionPadding,
                                 layout = continueWatchingLayout,
                                 onItemClick = onContinueWatchingClick,
@@ -744,7 +746,7 @@ fun HomeScreen(
                                 item(key = settingsItem.key) {
                                     HomeCollectionRowSection(
                                         collection = collection,
-                                        modifier = Modifier.padding(bottom = 12.dp),
+                                        modifier = Modifier.padding(bottom = 20.dp),
                                         sectionPadding = homeSectionPadding,
                                         animateGifs = animateCollectionGifs,
                                         onFolderClick = onFolderClick,
@@ -758,7 +760,7 @@ fun HomeScreen(
                                     HomeCatalogRowSection(
                                         section = section,
                                         entries = section.items.take(HOME_CATALOG_PREVIEW_LIMIT),
-                                        modifier = Modifier.padding(bottom = 12.dp),
+                                        modifier = Modifier.padding(bottom = 20.dp),
                                         sectionPadding = homeSectionPadding,
                                         onViewAllClick = if (section.canOpenCatalog(HOME_CATALOG_PREVIEW_LIMIT)) {
                                             onCatalogClick?.let { { it(section) } }
@@ -978,6 +980,7 @@ private fun heroMobileBelowSectionHeightHint(
         ContinueWatchingSectionStyle.Wide -> continueWatchingLayout.wideCardHeight + 56.dp
         ContinueWatchingSectionStyle.Poster ->
             continueWatchingLayout.posterCardHeight + continueWatchingLayout.posterTitleBlockHeight + 70.dp
+        ContinueWatchingSectionStyle.Landscape -> continueWatchingLayout.landscapeCardHeight + 56.dp
     }
     return sectionHeight + bottomNavigationOverlayHeight
 }

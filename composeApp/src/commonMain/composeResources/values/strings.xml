@@ -576,6 +576,8 @@
     <string name="settings_continue_watching_section_visibility">VISIBILITY</string>
     <string name="settings_continue_watching_show_description">Display the Continue Watching shelf on the Home screen.</string>
     <string name="settings_continue_watching_show_title">Show Continue Watching</string>
+    <string name="settings_continue_watching_style_landscape">Landscape</string>
+    <string name="settings_continue_watching_style_landscape_description">Full-image backdrop card with title overlay</string>
     <string name="settings_continue_watching_style_poster">Poster</string>
     <string name="settings_continue_watching_style_poster_description">Artwork-first poster card</string>
     <string name="settings_continue_watching_style_wide">Wide</string>
@@ -1080,6 +1082,9 @@
     <string name="home_empty_no_rows_message">Installed addons do not currently expose board-compatible catalogs without required extras.</string>
     <string name="home_empty_no_rows_title">No home rows available</string>
     <string name="home_view_details">View Details</string>
+    <string name="home_hero_watch_now">Watch Now</string>
+    <string name="home_hero_add_to_watchlist">Add to watchlist</string>
+    <string name="home_hero_more_info">More info</string>
     <string name="meta_section_actions_description">Play and save controls.</string>
     <string name="meta_section_actions_title">Actions</string>
     <string name="meta_section_cast_description">Principal cast list.</string>

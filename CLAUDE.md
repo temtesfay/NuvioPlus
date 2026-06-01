@@ -115,6 +115,106 @@ All settings repositories are **object singletons** with `MutableStateFlow<UiSta
 
 libmpv uses `#AARRGGBB` (alpha first, not last). `00` = transparent, `FF` = opaque. Helpers in `MPVPlayerBridge.swift`: `uiColorRGB(hex:)` for `#RRGGBB`, `uiColorAARRGGBB(hex:)` for MPV format, `overlayAlpha(fromAARRGGBB:)` to extract alpha byte.
 
+## Mac Catalyst (macOS)
+
+The iOS app ships as a Mac Catalyst target (`macabi` slice). Platform detection and all Mac-specific behaviour is gated on `isMacCatalyst`.
+
+### Platform Detection
+
+```kotlin
+// commonMain/kotlin/com/nuvio/app/Platform.kt
+internal expect val isMacCatalyst: Boolean
+
+// iosMain — true when running as Mac Catalyst
+internal actual val isMacCatalyst: Boolean = NSProcessInfo.processInfo.macCatalystApp
+
+// androidMain — always false
+internal actual val isMacCatalyst: Boolean = false
+```
+
+Swift side uses `#if targetEnvironment(macCatalyst)` compile-time guards.
+
+### Cursor Auto-Hide (Player)
+
+`MPVPlayerViewController` in `MPVPlayerBridge.swift` hides the system cursor after 2.5 s of inactivity and restores it on any mouse movement.
+
+**Key design decisions:**
+- **`UIHoverGestureRecognizer` is intentionally NOT used.** UIKit stops delivering hover events to gesture recognizers once the cursor is hidden. That makes the re-show path unreachable: the cursor hides, the user moves the mouse (macOS shows it via `setHiddenUntilMouseMoves` semantics), but no `.changed` event fires, so the timer never resets and the cursor stays visible forever after the first shake. The notification to show Kotlin player controls is also never posted.
+- Instead, an **AppKit `NSEvent` local monitor** is registered (via the ObjC runtime) for `NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged | NSEventMaskRightMouseDragged` (mask = `32 | 64 | 128`). Local monitors fire at the app's event-loop level, unconditionally, regardless of cursor visibility or which UIKit view is on top.
+- Cursor hiding uses `NSCursor.setHiddenUntilMouseMoves(true/false)`. **`perform:with:` must NOT be used** — it fails to pass a primitive `BOOL` correctly. Instead, `class_getClassMethod` + `method_getImplementation` + `unsafeBitCast` to a C function pointer is used to call the method with the correct calling convention.
+- The monitor token is stored in `mouseMovedMonitor: AnyObject?` and removed via `NSEvent.removeMonitor:` on teardown (`viewWillDisappear` / `destroyPlayer`).
+
+When the cursor moves, Swift posts `"NuvioPlayerShowControls"` via `NotificationCenter`. On the Kotlin side, `WatchForMacCursorShowControls` (in `PlayerPlatformEffects.kt`) listens for this notification and sets `controlsVisible = true` in `PlayerScreen`, making the player overlay reappear.
+
+```kotlin
+// commonMain — expect declaration
+@Composable expect fun WatchForMacCursorShowControls(onShow: () -> Unit)
+
+// iosMain — actual registers NSNotificationCenter observer (Mac Catalyst only)
+@Composable
+actual fun WatchForMacCursorShowControls(onShow: () -> Unit) {
+    if (!NSProcessInfo.processInfo.macCatalystApp) return
+    val onShowState = rememberUpdatedState(onShow)
+    DisposableEffect(Unit) {
+        val observer = NSNotificationCenter.defaultCenter.addObserverForName(
+            name = "NuvioPlayerShowControls", `object` = null,
+            queue = NSOperationQueue.mainQueue,
+        ) { _ -> onShowState.value() }
+        onDispose { NSNotificationCenter.defaultCenter.removeObserver(observer) }
+    }
+}
+```
+
+Called in `PlayerScreen.kt` as:
+```kotlin
+WatchForMacCursorShowControls(onShow = {
+    if (!playerControlsLocked) controlsVisible = true
+})
+```
+
+### Trackpad / Mouse-Wheel Scrolling
+
+Compose Multiplatform defaults `UIPanGestureRecognizer.allowedScrollTypesMask` to `.touch`, which rejects trackpad (`.continuous`) and mouse-wheel (`.discrete`) events on Mac Catalyst.
+
+`ContentView.patchScrollViews(in:)` recursively walks the view tree and sets `allowedScrollTypesMask = [.continuous, .discrete]` on every `UIScrollView.panGestureRecognizer` and standalone `UIPanGestureRecognizer`. Because Compose creates gesture recognizers lazily (new screens, lazy lists, in-app navigation), a persistent `Timer` fires every 1 s for the app's lifetime to re-patch any newly created recognizers.
+
+```swift
+// ContentView.configureMacWindow()
+scene.windows.forEach { patchScrollViews(in: $0) }
+Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak scene] _ in
+    scene?.windows.forEach { patchScrollViews(in: $0) }
+}
+```
+
+### Landscape Poster Size
+
+On Mac Catalyst, landscape posters are scaled ×1.5 to better fit the larger screen:
+
+```kotlin
+// PosterCardDimensions.kt
+internal fun landscapePosterWidth(basePosterWidthDp: Int): Dp =
+    (basePosterWidthDp * PosterLandscapeWidthScale * if (isMacCatalyst) 1.5f else 1.0f).dp
+```
+
+### MPV Player — Mac Catalyst Differences
+
+| Setting | iOS | Mac Catalyst |
+|---|---|---|
+| `hwdec` | `auto` | `videotoolbox` (MoltenVK doesn't support VK_KHR_video_decode_queue) |
+| `vulkan-swap-mode` | `fifo` | `mailbox` |
+| `vulkan-queue-count` | `1` | default |
+| `vulkan-async-compute/transfer` | `no` | `no` |
+| `framebufferOnly` | `true` | `false` (MoltenVK needs framebuffer read access) |
+| EDR (`wantsExtendedDynamicRangeContent`) | `true` | `false` (MoltenVK + EDR causes drawable failures on SDR displays) |
+
+**Audio session:** `AVAudioSession` must be activated (`.playback` / `.moviePlayback`) in `applicationDidFinishLaunchingWithOptions` **before** any player code, not in `viewDidLoad`. AudioUnit initialises on a background thread and queries `AVAudioSession.outputNumberOfChannels` — if the session isn't active yet it returns 0, causing an indefinite hang. This is done in `OrientationLockAppDelegate`.
+
+**MetalLayer EDR setter:** MoltenVK calls `wantsExtendedDynamicRangeContent` from its render thread. On Mac Catalyst the setter is a no-op on background threads (silently dropped) to avoid a deadlock: MoltenVK render thread → main thread → CoreAnimation drawable-lock → deadlock.
+
+### Orientation
+
+On Mac Catalyst, `OrientationLockCoordinator.supportedOrientations` returns `.all` and `requestOrientationUpdate` is a no-op (macOS manages window sizing). The compile-time `#if targetEnvironment(macCatalyst)` guards in `OrientationLockAppDelegate.application(_:supportedInterfaceOrientationsFor:)` enforce this.
+
 ## Version Management (iOS)
 
 `iosApp/Configuration/Version.xcconfig` is the single source of truth for iOS version numbers:
@@ -125,3 +225,4 @@ CURRENT_PROJECT_VERSION = N
 ```
 
 Bump both when releasing. The xcconfig feeds `CFBundleShortVersionString` and `CFBundleVersion` in the Info.plist.
+

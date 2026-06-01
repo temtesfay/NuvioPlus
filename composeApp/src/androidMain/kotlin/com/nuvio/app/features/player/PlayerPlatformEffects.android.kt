@@ -78,6 +78,19 @@ actual fun ManagePlayerPictureInPicture(
 }
 
 @Composable
+actual fun WatchForMacCursorShowControls(onShow: () -> Unit) = Unit
+
+@Composable
+actual fun WatchForPlayerKeyboardShortcuts(
+    onPlayPause: () -> Unit,
+    onSeekBackward: () -> Unit,
+    onSeekForward: () -> Unit,
+) = Unit
+
+@Composable
+actual fun SyncMacCursorWithControls(controlsVisible: Boolean) = Unit
+
+@Composable
 actual fun rememberPlayerGestureController(): PlayerGestureController? {
     val context = LocalContext.current
     val activity = context.findActivity() ?: return null

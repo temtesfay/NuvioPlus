@@ -285,8 +285,16 @@ class InAppYouTubeExtractor {
         }
 
         val bestProgressive = sortCandidates(progressive).firstOrNull()
-        val bestVideo = pickBestForClient(adaptiveVideo, PREFERRED_SEPARATE_CLIENT)
-        val bestAudio = pickBestForClient(adaptiveAudio, PREFERRED_SEPARATE_CLIENT)
+        // Prefer codecs that play natively on every platform: H.264 video (mp4)
+        // and AAC audio (m4a). YouTube's "best" by bitrate is usually VP9 + Opus,
+        // which iOS AVFoundation cannot decode. Fall back to "any best" only when
+        // no compatible codec is available.
+        val mp4Video = adaptiveVideo.filter { it.ext.equals("mp4", ignoreCase = true) }
+        val aacAudio = adaptiveAudio.filter { it.ext.equals("m4a", ignoreCase = true) }
+        val bestVideo = pickBestForClient(mp4Video, PREFERRED_SEPARATE_CLIENT)
+            ?: pickBestForClient(adaptiveVideo, PREFERRED_SEPARATE_CLIENT)
+        val bestAudio = pickBestForClient(aacAudio, PREFERRED_SEPARATE_CLIENT)
+            ?: pickBestForClient(adaptiveAudio, PREFERRED_SEPARATE_CLIENT)
 
         return TrailerExtractionPlatform.buildPlaybackSource(
             bestManifest = bestManifest,

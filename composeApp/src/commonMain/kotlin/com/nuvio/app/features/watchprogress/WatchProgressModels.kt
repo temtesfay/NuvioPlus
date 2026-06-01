@@ -17,6 +17,7 @@ internal const val WatchProgressSourceTraktShowProgress = "trakt_show_progress"
 enum class ContinueWatchingSectionStyle {
     Wide,
     Poster,
+    Landscape,
 }
 
 @Serializable

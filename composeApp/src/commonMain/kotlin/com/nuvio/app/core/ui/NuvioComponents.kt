@@ -10,6 +10,9 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.FlingBehavior
+import androidx.compose.foundation.gestures.ScrollScope
+import androidx.compose.foundation.gestures.ScrollableDefaults
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -74,6 +77,7 @@ import org.jetbrains.compose.resources.stringResource
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import com.nuvio.app.isMacCatalyst
 
 @Composable
 fun NuvioScreen(
@@ -84,8 +88,15 @@ fun NuvioScreen(
     content: LazyListScope.() -> Unit,
 ) {
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val baseFling = ScrollableDefaults.flingBehavior()
+    val flingBehavior = if (isMacCatalyst) {
+        remember(baseFling) { ScaledFlingBehavior(baseFling, 2.5f) }
+    } else {
+        baseFling
+    }
     LazyColumn(
         state = listState,
+        flingBehavior = flingBehavior,
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
@@ -95,7 +106,7 @@ fun NuvioScreen(
             end = horizontalPadding,
             bottom = nuvioSafeBottomPadding(18.dp),
         ),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
         content = content,
     )
 }
@@ -553,6 +564,18 @@ object NuvioToastController {
         val activeToast = _currentToast.value ?: return
         if (id == null || activeToast.id == id) {
             _currentToast.value = null
+        }
+    }
+}
+
+private class ScaledFlingBehavior(
+    private val base: FlingBehavior,
+    private val scale: Float,
+) : FlingBehavior {
+    override suspend fun ScrollScope.performFling(initialVelocity: Float): Float {
+        val scrollScope = this
+        return with(base) {
+            scrollScope.performFling(initialVelocity * scale)
         }
     }
 }

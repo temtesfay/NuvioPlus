@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		0A1B2C3D4E5F60718293A4BD /* DownloadsWidgetExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60718293A4B5 /* DownloadsWidgetExtension.appex */; };
+		0A1B2C3D4E5F60718293A4BD /* DownloadsWidgetExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60718293A4B5 /* DownloadsWidgetExtension.appex */; platformFilter = ios; };
 		7397CF462F80FE3A00AC0F84 /* MPVKit in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* MPVKit */; };
 /* End PBXBuildFile section */
 
@@ -246,7 +246,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if [ \"YES\" = \"$OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED\" ]; then\n  echo \"Skipping Gradle build task invocation due to OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED environment variable set to \\\"YES\\\"\"\n  exit 0\nfi\nif [ -z \"$JAVA_HOME\" ] && [ -x \"/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/bin/java\" ]; then\n  export JAVA_HOME=\"/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home\"\nfi\nif [ -n \"$JAVA_HOME\" ]; then\n  export PATH=\"$JAVA_HOME/bin:/opt/homebrew/bin:$PATH\"\nelse\n  export PATH=\"/opt/homebrew/bin:$PATH\"\nfi\ncd \"$SRCROOT/..\"\n./gradlew :composeApp:embedAndSignAppleFrameworkForXcode\n";
+			shellScript = "if [ \"YES\" = \"$OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED\" ]; then\n  echo \"Skipping Gradle build task invocation due to OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED environment variable set to \\\"YES\\\"\"\n  exit 0\nfi\nif [ -z \"$JAVA_HOME\" ] && [ -x \"/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/bin/java\" ]; then\n  export JAVA_HOME=\"/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home\"\nfi\nif [ -n \"$JAVA_HOME\" ]; then\n  export PATH=\"$JAVA_HOME/bin:/opt/homebrew/bin:$PATH\"\nelse\n  export PATH=\"/opt/homebrew/bin:$PATH\"\nfi\nif [ \"$IS_MACCATALYST\" = \"YES\" ]; then\n  export PLATFORM_NAME=\"iphoneos\"\n  export SDK_NAME=\"iphoneos\"\n  export EFFECTIVE_PLATFORM_NAME=\"-iphoneos\"\nfi\ncd \"$SRCROOT/..\"\n./gradlew :composeApp:embedAndSignAppleFrameworkForXcode\nif [ \"$IS_MACCATALYST\" = \"YES\" ]; then\n  BINARY=\"ComposeApp\"\n  IOS_FW=\"$SRCROOT/../composeApp/build/xcode-frameworks/$CONFIGURATION/iphoneos/$BINARY.framework\"\n  if [ -d \"$IOS_FW\" ]; then\n    DEST_FW=\"$BUILT_PRODUCTS_DIR/$BINARY.framework\"\n    rm -rf \"$DEST_FW\"\n    cp -R \"$IOS_FW\" \"$DEST_FW\"\n    RETAG_SCRIPT=\"$SRCROOT/Scripts/retag_for_catalyst.py\"\n    python3 \"$RETAG_SCRIPT\" \"$DEST_FW/$BINARY\"\n    EMBED_FW=\"$BUILT_PRODUCTS_DIR/$FULL_PRODUCT_NAME/Contents/Frameworks/$BINARY.framework\"\n    if [ -d \"$EMBED_FW\" ] && [ -f \"$EMBED_FW/$BINARY\" ]; then\n      python3 \"$RETAG_SCRIPT\" \"$EMBED_FW/$BINARY\"\n    fi\n  fi\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -390,6 +390,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DEVELOPMENT_ASSET_PATHS = "\"iosApp/Preview Content\"";
 				DEVELOPMENT_TEAM = V2NZBK2PR6;
 				ENABLE_PREVIEWS = YES;
@@ -405,10 +406,13 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				MACOSX_DEPLOYMENT_TARGET = 13.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.temtesfay.nuvio;
+				SUPPORTS_MACCATALYST = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = NO;
 			};
 			name = Release;
 		};
@@ -420,6 +424,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DEVELOPMENT_ASSET_PATHS = "\"iosApp/Preview Content\"";
 				DEVELOPMENT_TEAM = V2NZBK2PR6;
 				ENABLE_PREVIEWS = YES;
@@ -435,10 +440,13 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				MACOSX_DEPLOYMENT_TARGET = 13.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.temtesfay.nuvio;
+				SUPPORTS_MACCATALYST = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = NO;
 			};
 			name = Debug;
 		};

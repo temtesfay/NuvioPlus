@@ -9,18 +9,27 @@ import com.nuvio.app.features.collection.CollectionRepository
 import com.nuvio.app.features.collection.CollectionSource
 import com.nuvio.app.features.collection.TmdbCollectionSourceResolver
 import com.nuvio.app.features.collection.findCollectionCatalog
+import com.nuvio.app.features.tmdb.TmdbMetadataService
+import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.trakt.TraktPublicListSourceResolver
 import com.nuvio.app.features.watchprogress.CurrentDateProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import com.nuvio.app.features.details.MetaDetailsRepository
+import com.nuvio.app.features.trailer.HeroTrailerSourceCache
+import com.nuvio.app.features.trailer.TrailerPreBufferService
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import com.nuvio.app.features.trailer.TrailerPlaybackSource
 import kotlinx.coroutines.launch
 import kotlin.math.absoluteValue
 import kotlin.random.Random
@@ -29,6 +38,11 @@ object HomeRepository {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
+    // Resolved trailer playback sources keyed by "type:id". Populated by the
+    // background pre-warm — resolution happens in the stable Repository scope so
+    // it is never cancelled by a Compose composition scope leaving composition.
+    private val _trailerSources = MutableStateFlow<Map<String, TrailerPlaybackSource>>(emptyMap())
+    val trailerSources: StateFlow<Map<String, TrailerPlaybackSource>> = _trailerSources.asStateFlow()
 
     private var activeJob: Job? = null
     private var activeRequestKey: String? = null
@@ -38,6 +52,26 @@ object HomeRepository {
     private var cachedCollectionHeroItems: List<MetaPreview> = emptyList()
     private var collectionHeroJob: Job? = null
     private var collectionHeroRequestKey: String? = null
+    private var heroTrailerEnrichmentJob: Job? = null
+    // The hero-item stableKeys ("type:id") that the most recently STARTED enrichment
+    // run was launched for. publishCurrentState compares against this before deciding
+    // whether to cancel + restart enrichment. If the hero items haven't changed (same
+    // set of titles, same order), we let the in-flight job finish rather than killing
+    // it and paying the full YouTube-extraction cost again. This is the main reason
+    // trailers were taking 6-8 s: enrichment was being restarted 6-8 times during
+    // catalog loading because publishCurrentState fires once per batch.
+    private var lastEnrichedHeroKeys: List<String> = emptyList()
+    // Caches resolved trailer keys per "type:id" so re-emissions of the same hero
+    // list don't re-launch lookups (which were getting cancelled mid-flight before
+    // this). Stores empty lists too — a negative cache so we don't keep retrying
+    // titles with no trailer. First entry is the preferred key (TMDB if available),
+    // the rest are alternates (from Stremio) tried in order if the primary fails to
+    // extract a playable URL.
+    private val trailerKeyCache: MutableMap<String, List<String>> = mutableMapOf()
+    // Sticky pick of hero items. Once chosen, we keep these across catalog refreshes so
+    // a background sync doesn't yank the slide the user is currently watching. Only
+    // re-picked when these items are no longer available in the underlying catalogs.
+    private var cachedHeroItems: List<MetaPreview> = emptyList()
     private var lastPublishedCatalogHeroEmpty: Boolean = true
     private var lastErrorMessage: String? = null
 
@@ -61,6 +95,10 @@ object HomeRepository {
         }
         lastRequestKey = requestKey
         activeRequestKey = requestKey
+        // On a forced refresh the catalog is reloaded from scratch and may produce
+        // entirely different hero items — reset the enrichment guard so the new items
+        // get a fresh enrichment run rather than being skipped as "already done".
+        if (force) lastEnrichedHeroKeys = emptyList()
 
         if (requests.isEmpty()) {
             activeJob?.cancel()
@@ -169,7 +207,11 @@ object HomeRepository {
         collectionHeroRequestKey = null
         lastPublishedCatalogHeroEmpty = true
         lastErrorMessage = null
+        lastEnrichedHeroKeys = emptyList()
+        heroTrailerEnrichmentJob?.cancel()
+        heroTrailerEnrichmentJob = null
         _uiState.value = HomeUiState()
+        _trailerSources.value = emptyMap()
     }
 
     private fun publishCurrentState(
@@ -197,16 +239,45 @@ object HomeRepository {
             }
 
         val catalogHeroItems = if (snapshot.heroEnabled) {
-            val heroRandom = Random((requestKey?.hashCode() ?: 0).absoluteValue + 1)
-            currentDefinitions
+            val availablePool = currentDefinitions
                 .filter { definition -> preferences[definition.key]?.heroSourceEnabled != false }
                 .mapNotNull { definition -> cachedSections[definition.key] }
                 .map { section -> section.withReleaseFilter() }
                 .flatMap { section -> section.items }
                 .distinctBy { item -> "${item.type}:${item.id}" }
-                .shuffled(heroRandom)
-                .take(HOME_HERO_ITEM_LIMIT)
+
+            // Reuse the existing pick if every cached hero item is still present in
+            // the catalogs. This prevents the hero from re-shuffling mid-trailer when
+            // a background catalog sync re-publishes the home state.
+            val availableById = availablePool.associateBy { "${it.type}:${it.id}" }
+            val cachedStillValid = cachedHeroItems.isNotEmpty() &&
+                cachedHeroItems.all { "${it.type}:${it.id}" in availableById }
+
+            if (cachedStillValid) {
+                // Refresh the underlying MetaPreview from the latest catalog data
+                // (so updated posters/metadata flow through) but keep the order and
+                // any already-enriched trailer keys.
+                cachedHeroItems.map { stale ->
+                    val freshKey = "${stale.type}:${stale.id}"
+                    val fresh = availableById[freshKey] ?: stale
+                    if (stale.youtubeTrailerKey != null || stale.alternateTrailerKeys.isNotEmpty()) {
+                        fresh.copy(
+                            youtubeTrailerKey = stale.youtubeTrailerKey,
+                            alternateTrailerKeys = stale.alternateTrailerKeys,
+                        )
+                    } else {
+                        fresh
+                    }
+                }
+            } else {
+                val heroRandom = Random((requestKey?.hashCode() ?: 0).absoluteValue + 1)
+                availablePool
+                    .shuffled(heroRandom)
+                    .take(HOME_HERO_ITEM_LIMIT)
+                    .also { cachedHeroItems = it }
+            }
         } else {
+            cachedHeroItems = emptyList()
             emptyList()
         }
         lastPublishedCatalogHeroEmpty = snapshot.heroEnabled && catalogHeroItems.isEmpty()
@@ -222,6 +293,166 @@ object HomeRepository {
             sections = sections,
             errorMessage = if (sections.isEmpty()) lastErrorMessage else null,
         )
+
+        // Enrich hero items with trailer keys in the background — does not block the UI update above.
+        // Only restart if the set of hero items actually changed (different titles or different order).
+        // publishCurrentState fires once per catalog batch (6-8 times during a full load), and the
+        // old behaviour cancelled the in-flight extraction job every single time — costing a full
+        // re-extraction cycle each restart. Guarding on key equality lets the first job run to
+        // completion and shaves ~2s off first-trailer load time.
+        val heroKeys = heroItems.map { it.stableKey() }
+        if (heroKeys != lastEnrichedHeroKeys) {
+            lastEnrichedHeroKeys = heroKeys
+            heroTrailerEnrichmentJob?.cancel()
+            if (heroItems.isNotEmpty()) {
+                heroTrailerEnrichmentJob = scope.launch {
+                    enrichHeroTrailers(heroItems)
+                }
+            }
+        }
+    }
+
+    private suspend fun enrichHeroTrailers(items: List<MetaPreview>) {
+        val tmdbSettings = TmdbSettingsRepository.snapshot()
+        if (!tmdbSettings.enabled) {
+            println("🟡 (HeroTrailer) TMDB not enabled — skipping trailer enrichment")
+            return
+        }
+        if (!tmdbSettings.hasApiKey) {
+            println("🟡 (HeroTrailer) No TMDB API key — skipping trailer enrichment")
+            return
+        }
+        val language = tmdbSettings.language
+        println("🔵 (HeroTrailer) Enriching ${items.size} hero items for trailers (language=$language)")
+
+        val enriched = coroutineScope {
+            items.map { item ->
+                async {
+                    val cacheKey = "${item.type}:${item.id}"
+
+                    // 0) Cache hit — skip the network entirely.
+                    if (trailerKeyCache.containsKey(cacheKey)) {
+                        val cached = trailerKeyCache[cacheKey].orEmpty()
+                        return@async item.copy(
+                            youtubeTrailerKey = cached.firstOrNull(),
+                            alternateTrailerKeys = cached.drop(1),
+                        )
+                    }
+
+                    // Fetch TMDB and Stremio in parallel. We always want BOTH so the
+                    // YouTube extractor has fallbacks when the primary key is dead
+                    // (geo-blocked, age-gated, signature changed).
+                    coroutineScope {
+                        val tmdbDeferred = async {
+                            runCatching {
+                                TmdbMetadataService.fetchHeroTrailerKey(
+                                    id = item.id,
+                                    type = item.type,
+                                    language = language,
+                                )
+                            }.getOrElse { e ->
+                                println("🟡 (HeroTrailer) TMDB fetch failed for ${item.id}: ${e.message}")
+                                null
+                            }
+                        }
+                        val stremioDeferred = async {
+                            runCatching {
+                                val meta = MetaDetailsRepository.fetch(type = item.type, id = item.id)
+                                val youtubeTrailers = meta?.trailers
+                                    ?.filter { it.site.equals("YouTube", ignoreCase = true) }
+                                    .orEmpty()
+                                // Officials first, then any others. Distinct so we don't
+                                // duplicate the same video.
+                                (youtubeTrailers.filter { it.official } + youtubeTrailers.filterNot { it.official })
+                                    .map { it.key }
+                                    .filter { it.isNotBlank() }
+                                    .distinct()
+                            }.getOrElse { e ->
+                                println("🟡 (HeroTrailer) Stremio fallback failed for ${item.id}: ${e.message}")
+                                emptyList<String>()
+                            }
+                        }
+
+                        val tmdbKey = tmdbDeferred.await()
+                        val stremioKeys = stremioDeferred.await()
+
+                        // Build ordered key list: TMDB first (if present), then any
+                        // Stremio keys that aren't dupes. The extractor will try them
+                        // in order via HeroTrailerSourceCache.resolveFirstAvailable.
+                        val combined = buildList {
+                            if (!tmdbKey.isNullOrBlank()) add(tmdbKey)
+                            stremioKeys.forEach { if (it != tmdbKey) add(it) }
+                        }
+
+                        if (currentCoroutineContext().isActive) {
+                            trailerKeyCache[cacheKey] = combined
+                        }
+
+                        println("🔵 (HeroTrailer) ${item.name} → keys=${combined.size} (primary=${combined.firstOrNull() ?: "null"})")
+                        item.copy(
+                            youtubeTrailerKey = combined.firstOrNull(),
+                            alternateTrailerKeys = combined.drop(1),
+                        )
+                    }
+                }
+            }.awaitAll()
+        }
+
+        val withTrailers = enriched.count { it.youtubeTrailerKey != null }
+        println("🟢 (HeroTrailer) Enrichment complete — $withTrailers/${items.size} items have trailer keys")
+
+        // Pre-warm: resolve ALL candidate keys for every hero item in the stable
+        // Repository scope (never cancelled by Compose composition lifecycle).
+        // Results are published to _trailerSources so HomeHeroSection can read
+        // them via a simple map lookup — no async extraction in the composable.
+        //
+        // Each item runs in parallel; within each item keys are tried in order
+        // (TMDB primary first, Stremio alternates after) and we stop at the first
+        // working URL. Limiting to 5 candidates per item keeps YouTube load sane.
+        scope.launch {
+            coroutineScope {
+                enriched.map { item ->
+                    async {
+                        val stableKey = item.stableKey()
+                        val candidateKeys = buildList {
+                            val primary = item.youtubeTrailerKey
+                            if (!primary.isNullOrBlank()) add(primary)
+                            addAll(item.alternateTrailerKeys.take(4).filter { it.isNotBlank() })
+                        }
+                        if (candidateKeys.isEmpty()) return@async
+                        val source = runCatching {
+                            HeroTrailerSourceCache.resolveFirstAvailable(candidateKeys)
+                        }.getOrNull()
+                        if (source != null) {
+                            _trailerSources.update { it + (stableKey to source) }
+                            println("🟢 (HeroTrailer) Pre-warm resolved ${item.name} → ${source.videoUrl.take(60)}…")
+                            // Immediately start buffering the HLS manifest + first segment
+                            // in the background so AVPlayer is nearly ready by the time the
+                            // user reaches this slide (reduces ready time from ~4s to ~1s).
+                            TrailerPreBufferService.prefetch(source.videoUrl, source.audioUrl)
+                        } else {
+                            println("🟡 (HeroTrailer) Pre-warm: no playable source for ${item.name}")
+                        }
+                    }
+                }.awaitAll()
+            }
+            println("🟢 (HeroTrailer) Pre-warm complete for all ${enriched.size} hero items")
+        }
+
+        // Only publish if the hero list hasn't changed while we were fetching
+        _uiState.update { current ->
+            val currentIds = current.heroItems.map { it.stableKey() }
+            val enrichedIds = enriched.map { it.stableKey() }
+            if (currentIds == enrichedIds) current.copy(heroItems = enriched) else current
+        }
+
+        // Sync the sticky cache with enriched keys so the next catalog re-publish
+        // doesn't drop the trailer keys we just resolved.
+        val cachedIds = cachedHeroItems.map { it.stableKey() }
+        val enrichedIds = enriched.map { it.stableKey() }
+        if (cachedIds == enrichedIds) {
+            cachedHeroItems = enriched
+        }
     }
 
     private suspend fun HomeCatalogDefinition.toSection(): HomeCatalogSection {

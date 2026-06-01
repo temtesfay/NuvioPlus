@@ -54,6 +54,8 @@ import nuvio.composeapp.generated.resources.settings_continue_watching_sort_mode
 import nuvio.composeapp.generated.resources.settings_continue_watching_sort_mode_streaming
 import nuvio.composeapp.generated.resources.settings_continue_watching_sort_mode_streaming_desc
 import nuvio.composeapp.generated.resources.settings_continue_watching_sort_mode_title
+import nuvio.composeapp.generated.resources.settings_continue_watching_style_landscape
+import nuvio.composeapp.generated.resources.settings_continue_watching_style_landscape_description
 import nuvio.composeapp.generated.resources.settings_continue_watching_style_poster
 import nuvio.composeapp.generated.resources.settings_continue_watching_style_poster_description
 import nuvio.composeapp.generated.resources.settings_continue_watching_style_wide
@@ -293,12 +295,14 @@ private val ContinueWatchingSectionStyle.labelRes: StringResource
     get() = when (this) {
         ContinueWatchingSectionStyle.Wide -> Res.string.settings_continue_watching_style_wide
         ContinueWatchingSectionStyle.Poster -> Res.string.settings_continue_watching_style_poster
+        ContinueWatchingSectionStyle.Landscape -> Res.string.settings_continue_watching_style_landscape
     }
 
 private val ContinueWatchingSectionStyle.descriptionRes: StringResource
     get() = when (this) {
         ContinueWatchingSectionStyle.Wide -> Res.string.settings_continue_watching_style_wide_description
         ContinueWatchingSectionStyle.Poster -> Res.string.settings_continue_watching_style_poster_description
+        ContinueWatchingSectionStyle.Landscape -> Res.string.settings_continue_watching_style_landscape_description
     }
 
 @OptIn(ExperimentalMaterial3Api::class)

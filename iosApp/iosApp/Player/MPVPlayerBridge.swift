@@ -4,6 +4,7 @@ import Libmpv
 import ComposeApp
 import MediaAccessibility
 import CoreText
+import ObjectiveC
 
 // MARK: - Player Bridge Implementation (Kotlin protocol conformance)
 
@@ -336,6 +337,21 @@ final class MPVPlayerViewController: UIViewController {
     private var overlayBottomConstraint: NSLayoutConstraint?
     private var isUsingSubtitleOverlay = false
 
+    #if targetEnvironment(macCatalyst)
+    // Cursor state (Mac Catalyst only).
+    // mouseMovedMonitor: opaque token from NSEvent.addLocalMonitorForEventsMatchingMask:handler:
+    //   Must be passed to NSEvent.removeMonitor: on teardown.
+    // NSEvent local monitors fire at the AppKit event-loop level, unconditionally,
+    //   regardless of cursor visibility — unlike UIHoverGestureRecognizer which
+    //   stops delivering events once the cursor is hidden.
+    //
+    // The cursor and player controls are intentionally kept in sync: the cursor
+    // only hides when Kotlin decides to hide the controls (via NuvioPlayerHideCursor),
+    // so both disappear and reappear together with no independent timers.
+    private var mouseMovedMonitor: AnyObject?
+    private var hideCursorObserver: NSObjectProtocol?
+    #endif
+
     // State (polled from Kotlin every 250ms)
     var isPlayerLoading: Bool = true
     var isPlayerPlaying: Bool = false
@@ -375,22 +391,46 @@ final class MPVPlayerViewController: UIViewController {
         view.layer.masksToBounds = true
 
         metalLayer.contentsGravity = .resize
-        metalLayer.contentsScale = view.window?.screen.nativeScale ?? UIScreen.main.nativeScale
+        metalLayer.contentsScale = view.window?.screen.nativeScale ?? 2.0
+        #if targetEnvironment(macCatalyst)
+        // MoltenVK on macOS needs read access to the framebuffer for certain operations.
+        // EDR (extended dynamic range) combined with MoltenVK can cause drawable
+        // acquisition failures on non-HDR Mac displays — disable it here and let
+        // configureVideoOutput re-enable it if the user's settings request it.
+        metalLayer.framebufferOnly = false
+        metalLayer.wantsExtendedDynamicRangeContent = false
+        #else
         metalLayer.framebufferOnly = true
-        metalLayer.backgroundColor = UIColor.black.cgColor
         metalLayer.wantsExtendedDynamicRangeContent = true
+        #endif
+        metalLayer.backgroundColor = UIColor.black.cgColor
         view.layer.addSublayer(metalLayer)
         layoutMetalLayer()
 
         setupMpv()
         setupNotifications()
         setupSubtitleOverlay()
+        #if targetEnvironment(macCatalyst)
+        setupCursorTracking()
+        #endif
         refreshImmersiveSystemUI()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         refreshImmersiveSystemUI()
+        #if targetEnvironment(macCatalyst)
+        // Ensure cursor is visible when the player (re-)appears.
+        showCursor()
+        #endif
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        #if targetEnvironment(macCatalyst)
+        // Restore the cursor when navigating away from the player.
+        teardownCursorTracking()
+        #endif
     }
 
     override func viewDidLayoutSubviews() {
@@ -416,7 +456,7 @@ final class MPVPlayerViewController: UIViewController {
         let bounds = view.bounds
         guard bounds.width > 1, bounds.height > 1 else { return }
 
-        let scale = view.window?.screen.nativeScale ?? UIScreen.main.nativeScale
+        let scale = view.window?.screen.nativeScale ?? 2.0
         let drawableSize = CGSize(
             width: (bounds.width * scale).rounded(.toNearestOrAwayFromZero),
             height: (bounds.height * scale).rounded(.toNearestOrAwayFromZero)
@@ -442,27 +482,46 @@ final class MPVPlayerViewController: UIViewController {
             return
         }
 
-        checkError(mpv_request_log_messages(mpv, "warn"))
+        checkError(mpv_request_log_messages(mpv, "warn"), "log-messages")
 
-        checkError(mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &metalLayer))
-        checkError(mpv_set_option_string(mpv, "vo", "gpu-next"))
-        checkError(mpv_set_option_string(mpv, "gpu-api", "vulkan"))
-        checkError(mpv_set_option_string(mpv, "gpu-context", "moltenvk"))
-        checkError(mpv_set_option_string(mpv, "hwdec", "auto"))
-        checkError(mpv_set_option_string(mpv, "audio-channels", "stereo"))
-        checkError(mpv_set_option_string(mpv, "audio-fallback-to-null", "yes"))
-        checkError(mpv_set_option_string(mpv, "vulkan-swap-mode", "fifo"))
-        checkError(mpv_set_option_string(mpv, "vulkan-queue-count", "1"))
-        checkError(mpv_set_option_string(mpv, "vulkan-async-compute", "no"))
-        checkError(mpv_set_option_string(mpv, "vulkan-async-transfer", "no"))
-        checkError(mpv_set_option_string(mpv, "vulkan-disable-interop", "yes"))
-        checkError(mpv_set_option_string(mpv, "video-rotate", "no"))
-        checkError(mpv_set_option_string(mpv, "subs-match-os-language", "yes"))
-        checkError(mpv_set_option_string(mpv, "subs-fallback", "yes"))
-        checkError(mpv_set_option_string(mpv, "keep-open", "yes"))
-        checkError(mpv_set_option_string(mpv, "target-colorspace-hint", "yes"))
-        checkError(mpv_set_option_string(mpv, "tone-mapping", "auto"))
-        checkError(mpv_set_option_string(mpv, "hdr-compute-peak", "yes"))
+        var wid = Int64(Int(bitPattern: Unmanaged.passUnretained(metalLayer).toOpaque()))
+        checkError(mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &wid), "wid")
+        checkError(mpv_set_option_string(mpv, "vo", "gpu-next"), "vo")
+        checkError(mpv_set_option_string(mpv, "gpu-api", "vulkan"), "gpu-api")
+        checkError(mpv_set_option_string(mpv, "gpu-context", "moltenvk"), "gpu-context")
+        checkError(mpv_set_option_string(mpv, "hwdec", "auto"), "hwdec-default")
+        checkError(mpv_set_option_string(mpv, "audio-channels", "stereo"), "audio-channels")
+        checkError(mpv_set_option_string(mpv, "audio-fallback-to-null", "yes"), "audio-fallback-to-null")
+        #if targetEnvironment(macCatalyst)
+        // MoltenVK does not implement VK_KHR_video_decode_queue, so hwdec=auto
+        // falls through to Vulkan video decode and fails with HEVC/AVC streams.
+        // Force VideoToolbox directly — Apple's native HW decoder, no Vulkan path.
+        checkError(mpv_set_option_string(mpv, "hwdec", "videotoolbox"), "hwdec-mac")
+        // mailbox is preferred (non-blocking) but MoltenVK falls back to fifo on
+        // most macOS displays — that is fine now that VideoToolbox handles decode.
+        checkError(mpv_set_option_string(mpv, "vulkan-swap-mode", "mailbox"), "vulkan-swap-mode-mac")
+        // AudioUnit (the default iOS backend) requires AVAudioSession to be
+        // activated before init, otherwise it gets 0 output channels and hangs
+        // indefinitely.  AVAudioSession is now activated in applicationDidFinish-
+        // LaunchingWithOptions (OrientationLockAppDelegate) before any player code
+        // runs, so the audiounit backend should receive valid channel info here.
+        // If activation failed for some reason, audio-fallback-to-null (set above)
+        // will route silently rather than let a broken backend stall the player.
+        #else
+        checkError(mpv_set_option_string(mpv, "vulkan-swap-mode", "fifo"), "vulkan-swap-mode-ios")
+        checkError(mpv_set_option_string(mpv, "vulkan-queue-count", "1"), "vulkan-queue-count")
+        #endif
+        checkError(mpv_set_option_string(mpv, "vulkan-async-compute", "no"), "vulkan-async-compute")
+        checkError(mpv_set_option_string(mpv, "vulkan-async-transfer", "no"), "vulkan-async-transfer")
+        // vulkan-disable-interop is not present in this libmpv build — omitted.
+        checkError(mpv_set_option_string(mpv, "video-rotate", "no"), "video-rotate")
+        // subs-match-os-language / subs-fallback: MPV 0.34+ only; ignore silently if absent.
+        mpv_set_option_string(mpv, "subs-match-os-language", "yes")
+        mpv_set_option_string(mpv, "subs-fallback", "yes")
+        checkError(mpv_set_option_string(mpv, "keep-open", "yes"), "keep-open")
+        checkError(mpv_set_option_string(mpv, "target-colorspace-hint", "yes"), "target-colorspace-hint")
+        checkError(mpv_set_option_string(mpv, "tone-mapping", "auto"), "tone-mapping")
+        checkError(mpv_set_option_string(mpv, "hdr-compute-peak", "yes"), "hdr-compute-peak")
 
         checkError(mpv_initialize(mpv))
 
@@ -487,6 +546,98 @@ final class MPVPlayerViewController: UIViewController {
         NotificationCenter.default.addObserver(self, selector: #selector(enterForeground),
                                                name: UIApplication.willEnterForegroundNotification, object: nil)
     }
+
+    // MARK: - Cursor tracking (Mac Catalyst)
+    //
+    // Design: cursor visibility is fully driven by Kotlin's controls-visible state.
+    // – Mouse moves  →  Swift shows cursor immediately + posts NuvioPlayerShowControls
+    //                   so Kotlin shows controls and starts its 3.5 s inactivity timer.
+    // – Kotlin hides controls (timer fires or user action) → posts NuvioPlayerHideCursor
+    //                   → Swift hides cursor at that exact instant.
+    // There is no independent Swift-side timer, so cursor and controls always
+    // disappear and reappear together.
+
+    #if targetEnvironment(macCatalyst)
+    /// Registers the AppKit NSEvent monitor for mouse movement and the
+    /// Kotlin-driven NuvioPlayerHideCursor notification listener.
+    ///
+    /// UIHoverGestureRecognizer is intentionally NOT used: UIKit stops delivering
+    /// hover events once the cursor is hidden, making the re-show path unreachable.
+    /// NSEvent local monitors bypass UIKit and fire unconditionally.
+    private func setupCursorTracking() {
+        guard mouseMovedMonitor == nil else { return }
+
+        // NSEventMaskMouseMoved(32) | NSEventMaskLeftMouseDragged(64) | NSEventMaskRightMouseDragged(128)
+        let mask = NSNumber(value: UInt64(32 | 64 | 128))
+        typealias EventBlock = @convention(block) (AnyObject) -> AnyObject?
+        let block: EventBlock = { [weak self] event in
+            self?.handleMouseMoved()
+            return event
+        }
+        if let nsEventClass = NSClassFromString("NSEvent") {
+            let blockObj = block as AnyObject
+            if let result = (nsEventClass as AnyObject).perform(
+                NSSelectorFromString("addLocalMonitorForEventsMatchingMask:handler:"),
+                with: mask,
+                with: blockObj
+            ) {
+                mouseMovedMonitor = result.takeUnretainedValue()
+            }
+        }
+
+        // Listen for Kotlin telling us to hide the cursor (controls have been hidden).
+        hideCursorObserver = NotificationCenter.default.addObserver(
+            forName: Notification.Name("NuvioPlayerHideCursor"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MPVPlayerViewController.setCursorHiddenUntilMouseMoves(true)
+        }
+
+        // Ensure cursor starts visible.
+        MPVPlayerViewController.setCursorHiddenUntilMouseMoves(false)
+    }
+
+    private func handleMouseMoved() {
+        // Show the cursor (in case Kotlin had hidden it) and notify Kotlin to
+        // reveal player controls and restart its inactivity timer.
+        MPVPlayerViewController.setCursorHiddenUntilMouseMoves(false)
+        NotificationCenter.default.post(
+            name: Notification.Name("NuvioPlayerShowControls"), object: nil)
+    }
+
+    func showCursor() {
+        MPVPlayerViewController.setCursorHiddenUntilMouseMoves(false)
+    }
+
+    private func teardownCursorTracking() {
+        if let monitor = mouseMovedMonitor {
+            if let nsEventClass = NSClassFromString("NSEvent") {
+                _ = (nsEventClass as AnyObject).perform(
+                    NSSelectorFromString("removeMonitor:"), with: monitor)
+            }
+            mouseMovedMonitor = nil
+        }
+        if let obs = hideCursorObserver {
+            NotificationCenter.default.removeObserver(obs)
+            hideCursorObserver = nil
+        }
+        // Always restore the cursor when leaving the player.
+        MPVPlayerViewController.setCursorHiddenUntilMouseMoves(false)
+    }
+
+    /// Calls AppKit's +[NSCursor setHiddenUntilMouseMoves:(BOOL)] via a C function
+    /// pointer obtained from the ObjC runtime.  Using perform:with: fails for
+    /// primitive BOOL arguments — this approach passes the value correctly.
+    private static func setCursorHiddenUntilMouseMoves(_ hidden: Bool) {
+        guard let nsCursorClass = NSClassFromString("NSCursor") else { return }
+        let sel = NSSelectorFromString("setHiddenUntilMouseMoves:")
+        guard let method = class_getClassMethod(nsCursorClass, sel) else { return }
+        typealias SetHiddenFn = @convention(c) (AnyObject, Selector, Bool) -> Void
+        let fn = unsafeBitCast(method_getImplementation(method), to: SetHiddenFn.self)
+        fn(nsCursorClass as AnyObject, sel, hidden)
+    }
+    #endif
 
     @objc private func enterBackground() {
         guard mpv != nil else { return }
@@ -627,10 +778,20 @@ final class MPVPlayerViewController: UIViewController {
         saturation: Int,
         gamma: Int
     ) {
+        #if !targetEnvironment(macCatalyst)
+        // On Mac Catalyst, wantsExtendedDynamicRangeContent is pinned off at init
+        // (EDR + MoltenVK causes drawable acquisition failures on non-HDR displays).
         metalLayer.wantsExtendedDynamicRangeContent = extendedDynamicRange
+        #endif
         guard mpv != nil else { return }
 
+        #if targetEnvironment(macCatalyst)
+        // MoltenVK lacks VK_KHR_video_decode_queue; always keep VideoToolbox on Mac.
+        // Ignore whatever hwdec the Kotlin settings layer sends.
+        setStringProperty("hwdec", "videotoolbox")
+        #else
         setStringProperty("hwdec", hardwareDecoder)
+        #endif
         setStringProperty("target-colorspace-hint", targetColorspaceHint ? "yes" : "no")
         setStringProperty("tone-mapping", toneMapping)
         setStringProperty("hdr-compute-peak", hdrComputePeak ? "yes" : "no")
@@ -680,7 +841,34 @@ final class MPVPlayerViewController: UIViewController {
         } else {
             var id = Int64(trackId)
             mpv_set_property(mpv, "sid", MPV_FORMAT_INT64, &id)
+            // If the UIKit overlay is currently suppressing MPV's renderer
+            // (sub-visibility=no) and the user just selected an image-based track
+            // (PGS, HDMV, etc.), restore visibility immediately.  applySubtitleStyle
+            // is not re-called on track switches, so we must handle it here.
+            if isUsingSubtitleOverlay && isSubtitleIdImageBased(mpvId: trackId) {
+                setStringProperty("sub-visibility", "yes")
+                isUsingSubtitleOverlay = false
+                DispatchQueue.main.async { [weak self] in
+                    self?.updateSubtitleOverlayText("")
+                }
+            }
         }
+    }
+
+    /// Returns true if the subtitle track with MPV id `mpvId` carries image-based
+    /// bitmaps rather than text (PGS, HDMV, DVB, etc.).
+    private func isSubtitleIdImageBased(mpvId: Int) -> Bool {
+        guard mpv != nil else { return false }
+        let count = getInt("track-list/count")
+        for i in 0..<count {
+            guard (getString("track-list/\(i)/type") ?? "") == "sub" else { continue }
+            guard getInt("track-list/\(i)/id") == mpvId else { continue }
+            let codec = (getString("track-list/\(i)/codec") ?? "").lowercased()
+            return codec.contains("pgs") || codec.contains("hdmv")
+                || codec.contains("dvd_subtitle") || codec.contains("dvb_subtitle")
+                || codec.contains("hdmv_pgs") || codec.contains("xsub")
+        }
+        return false
     }
 
     func addSubtitleUrl(_ url: String) {
@@ -725,6 +913,23 @@ final class MPVPlayerViewController: UIViewController {
 
         print("[Nuvio] applySubtitleStyle: text=\(textColor) back=\(backColor) font=\(fontName) bold=\(isBold)")
 
+        // On Mac Catalyst, the app runs on a larger display but inherits subtitle
+        // settings from the shared iOS/Mac profile.  Apply a scale factor so
+        // subtitles are legible on a laptop screen without requiring a separate
+        // settings screen.  The user adjusts the iOS size and Mac scales up from it.
+        // Stored in UserDefaults so a future Mac preferences panel can override it.
+        #if targetEnvironment(macCatalyst)
+        let macSubtitleScale: Float = {
+            let stored = UserDefaults.standard.float(forKey: "NuvioMacSubtitleScale")
+            return stored > 0 ? stored : 2.2
+        }()
+        let effectiveFontSize = fontSize * macSubtitleScale
+        let effectiveOutlineSize = outlineSize * macSubtitleScale
+        #else
+        let effectiveFontSize = fontSize
+        let effectiveOutlineSize = outlineSize
+        #endif
+
         // Decide whether to use the UIKit overlay or MPV's built-in renderer.
         //
         // UIKit overlay: used when there is a non-transparent background OR a
@@ -736,21 +941,33 @@ final class MPVPlayerViewController: UIViewController {
         // for the "plain white text, no background" path.
         let bgAlpha = overlayAlpha(fromAARRGGBB: backColor)
         let hasCustomFont = !fontName.isEmpty && fontName != "sans-serif"
-        let useOverlay = bgAlpha > 0.01 || hasCustomFont
+        // Image-based subtitles (PGS, HDMV, DVB) have no text content — sub-text
+        // is always empty for them.  Always fall through to MPV's native image
+        // renderer; the UIKit overlay cannot display them.
+        let isImageBased = isSelectedSubtitleImageBased()
+        let useOverlay = !isImageBased && (bgAlpha > 0.01 || hasCustomFont)
 
         isUsingSubtitleOverlay = useOverlay
 
         if useOverlay {
             // ── UIKit overlay path ──────────────────────────────────────────
             // Font: reverse the ×3 scaling that Kotlin applies to get back to sp/pt.
-            let ptSize = max(12, CGFloat(fontSize) / 3.0)
+            let ptSize = max(12, CGFloat(effectiveFontSize) / 3.0)
             let uiFont = subtitleFont(postscriptName: fontName, isBold: isBold, pointSize: ptSize)
             let textUIColor = uiColorRGB(hex: textColor)
             let bgUIColor   = uiColorAARRGGBB(hex: backColor)
             // Map subPos (0..150, 100 = bottom) to a bottom inset in points.
             // subPos=90 (default, bottomOffset=20) → 44 pt from safe-area bottom.
             let bottomInset = CGFloat(24 + max(0, 100 - subPos) * 2)
-            let showOutlineShadow = outlineSize > 0
+            // On Mac Catalyst the safe-area bottom is ~0 (no home indicator), so
+            // the same inset looks much lower than on iPhone.  Add extra margin to
+            // keep subtitles in a comfortable reading position.
+            #if targetEnvironment(macCatalyst)
+            let effectiveBottomInset = bottomInset + 40.0
+            #else
+            let effectiveBottomInset = bottomInset
+            #endif
+            let showOutlineShadow = effectiveOutlineSize > 0
 
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -758,7 +975,7 @@ final class MPVPlayerViewController: UIViewController {
                     textColor: textUIColor,
                     bgColor: bgUIColor,
                     font: uiFont,
-                    bottomInset: bottomInset,
+                    bottomInset: effectiveBottomInset,
                     showShadow: showOutlineShadow
                 )
                 // Show current subtitle immediately (if any).
@@ -771,33 +988,63 @@ final class MPVPlayerViewController: UIViewController {
 
         } else {
             // ── MPV native renderer path ────────────────────────────────────
+            // Also used for image-based subtitles (PGS/HDMV) regardless of style,
+            // since MPV renders them as bitmap overlays rather than text.
             DispatchQueue.main.async { [weak self] in
                 self?.updateSubtitleOverlayText("")   // hide overlay
             }
             setStringProperty("sub-visibility", "yes")
 
-            checkError(mpv_set_property_string(mpv, "sub-ass-override", "strip"))
+            // Text-style properties are irrelevant for image-based subtitle tracks.
+            if !isImageBased {
+                checkError(mpv_set_property_string(mpv, "sub-ass-override", "strip"))
 
-            let borderStyleErr = mpv_set_property_string(mpv, "sub-border-style", "background-box")
-            if borderStyleErr < 0 {
-                checkError(mpv_set_property_string(mpv, "sub-border-style", "opaque-box"))
+                let borderStyleErr = mpv_set_property_string(mpv, "sub-border-style", "background-box")
+                if borderStyleErr < 0 {
+                    checkError(mpv_set_property_string(mpv, "sub-border-style", "opaque-box"))
+                }
+
+                checkError(mpv_set_property_string(mpv, "sub-color", textColor))
+                checkError(mpv_set_property_string(mpv, "sub-outline-color", "#000000"))
+
+                var outline = Double(effectiveOutlineSize)
+                checkError(mpv_set_property(mpv, "sub-outline-size", MPV_FORMAT_DOUBLE, &outline))
+
+                var size = Double(effectiveFontSize)
+                checkError(mpv_set_property(mpv, "sub-font-size", MPV_FORMAT_DOUBLE, &size))
+
+                // On Mac Catalyst the safe area has no bottom inset, so sub-pos=100
+                // (the raw bottom) sits right at the screen edge.  Nudge it up so
+                // text subs land in the same comfortable zone as on iPhone.
+                #if targetEnvironment(macCatalyst)
+                var position = Int64(max(0, subPos - 8))
+                #else
+                var position = Int64(subPos)
+                #endif
+                checkError(mpv_set_property(mpv, "sub-pos", MPV_FORMAT_INT64, &position))
+
+                checkError(mpv_set_property_string(mpv, "sub-bold", isBold ? "yes" : "no"))
+                checkError(mpv_set_property_string(mpv, "sub-back-color", backColor))
             }
-
-            checkError(mpv_set_property_string(mpv, "sub-color", textColor))
-            checkError(mpv_set_property_string(mpv, "sub-outline-color", "#000000"))
-
-            var outline = Double(outlineSize)
-            checkError(mpv_set_property(mpv, "sub-outline-size", MPV_FORMAT_DOUBLE, &outline))
-
-            var size = Double(fontSize)
-            checkError(mpv_set_property(mpv, "sub-font-size", MPV_FORMAT_DOUBLE, &size))
-
-            var position = Int64(subPos)
-            checkError(mpv_set_property(mpv, "sub-pos", MPV_FORMAT_INT64, &position))
-
-            checkError(mpv_set_property_string(mpv, "sub-bold", isBold ? "yes" : "no"))
-            checkError(mpv_set_property_string(mpv, "sub-back-color", backColor))
         }
+    }
+
+    /// Returns true when the currently selected subtitle track carries image-based
+    /// bitmaps (PGS, HDMV, DVB, XSUB) rather than text.  MPV renders these tracks
+    /// as pixel overlays; the UIKit text overlay cannot display them at all.
+    private func isSelectedSubtitleImageBased() -> Bool {
+        guard mpv != nil else { return false }
+        let count = getInt("track-list/count")
+        for i in 0..<count {
+            let type = getString("track-list/\(i)/type") ?? ""
+            guard type == "sub" else { continue }
+            guard getFlag("track-list/\(i)/selected") else { continue }
+            let codec = (getString("track-list/\(i)/codec") ?? "").lowercased()
+            return codec.contains("pgs") || codec.contains("hdmv")
+                || codec.contains("dvd_subtitle") || codec.contains("dvb_subtitle")
+                || codec.contains("hdmv_pgs") || codec.contains("xsub")
+        }
+        return false
     }
 
     // MARK: - Subtitle overlay setup & helpers
@@ -965,6 +1212,9 @@ final class MPVPlayerViewController: UIViewController {
     }
 
     func destroyPlayer() {
+        #if targetEnvironment(macCatalyst)
+        teardownCursorTracking()
+        #endif
         NotificationCenter.default.removeObserver(self)
         pendingLoadRetryWorkItem?.cancel()
         pendingLoadRetryWorkItem = nil
@@ -1015,6 +1265,9 @@ final class MPVPlayerViewController: UIViewController {
         let count = getInt("track-list/count")
         var audioIdx = 0
         var subIdx = 0
+        // Track whether the currently selected sub track is image-based.
+        // Used after the loop to fix up overlay suppression without extra queries.
+        var selectedSubIsImageBased = false
 
         for i in 0..<count {
             let type = getString("track-list/\(i)/type") ?? ""
@@ -1043,10 +1296,27 @@ final class MPVPlayerViewController: UIViewController {
             } else if type == "sub" {
                 subs.append(TrackInfo(index: subIdx, id: id, type: type, title: displayTitle, lang: lang, selected: selected))
                 subIdx += 1
+                if selected {
+                    let c = codec.lowercased()
+                    selectedSubIsImageBased = c.contains("pgs") || c.contains("hdmv")
+                        || c.contains("dvd_subtitle") || c.contains("dvb_subtitle")
+                        || c.contains("hdmv_pgs") || c.contains("xsub")
+                }
             }
         }
         audioTracks = audio
         subtitleTracks = subs
+
+        // Safety net: if the UIKit overlay is suppressing MPV's renderer but the
+        // auto-selected subtitle track is image-based (e.g. PGS via subs-match-os-
+        // language), restore visibility immediately so bitmap frames are not hidden.
+        if isUsingSubtitleOverlay && selectedSubIsImageBased {
+            setStringProperty("sub-visibility", "yes")
+            isUsingSubtitleOverlay = false
+            DispatchQueue.main.async { [weak self] in
+                self?.updateSubtitleOverlayText("")
+            }
+        }
     }
 
     private func getTrackString(_ index: Int, _ field: String) -> String {
@@ -1293,10 +1563,13 @@ final class MPVPlayerViewController: UIViewController {
         return Int(data)
     }
 
-    private func checkError(_ status: CInt) {
+    @discardableResult
+    private func checkError(_ status: CInt, _ context: String = "") -> CInt {
         if status < 0 {
-            print("[MPV] API error: \(String(cString: mpv_error_string(status)))")
+            let detail = context.isEmpty ? "" : " [\(context)]"
+            print("[MPV] API error\(detail): \(String(cString: mpv_error_string(status)))")
         }
+        return status
     }
 
     private func sanitizeRequestHeaders(_ headers: [String: String]) -> [String: String] {

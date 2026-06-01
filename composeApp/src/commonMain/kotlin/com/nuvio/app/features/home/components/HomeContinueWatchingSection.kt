@@ -102,6 +102,16 @@ private fun ContinueWatchingItem.continueWatchingArtworkUrl(
     )
 }
 
+private fun ContinueWatchingItem.continueWatchingLandscapeArtworkUrl(
+    useEpisodeThumbnails: Boolean,
+): String? = when {
+    // Landscape cards: prefer backdrop/episode thumbnail (wide images) over portrait poster
+    isNextUp && useEpisodeThumbnails -> firstNonBlank(episodeThumbnail, background, poster, imageUrl)
+    isNextUp -> firstNonBlank(background, episodeThumbnail, poster, imageUrl)
+    useEpisodeThumbnails -> firstNonBlank(episodeThumbnail, background, poster, imageUrl)
+    else -> firstNonBlank(background, episodeThumbnail, poster, imageUrl)
+}
+
 private fun ContinueWatchingItem.continueWatchingPosterArtworkUrl(
     useEpisodeThumbnails: Boolean,
 ): String? {
@@ -218,6 +228,14 @@ private fun HomeContinueWatchingSectionContent(
                     onClick = onItemClick?.let { { it(item) } },
                     onLongClick = onItemLongPress?.let { { it(item) } },
                 )
+                ContinueWatchingSectionStyle.Landscape -> ContinueWatchingLandscapeCard(
+                    item = item,
+                    layout = layout,
+                    useEpisodeThumbnails = useEpisodeThumbnails,
+                    blurNextUp = blurNextUp,
+                    onClick = onItemClick?.let { { it(item) } },
+                    onLongClick = onItemLongPress?.let { { it(item) } },
+                )
             }
         }
     }
@@ -269,6 +287,7 @@ fun ContinueWatchingStylePreview(
         when (style) {
             ContinueWatchingSectionStyle.Wide -> WideCardPreview()
             ContinueWatchingSectionStyle.Poster -> PosterCardPreview()
+            ContinueWatchingSectionStyle.Landscape -> LandscapeCardPreview()
         }
     }
 }
@@ -638,6 +657,165 @@ private fun ContinueWatchingPosterCard(
 }
 
 @Composable
+private fun LandscapeCardPreview() {
+    Box(
+        modifier = Modifier
+            .width(100.dp)
+            .height(56.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)),
+    ) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .fillMaxHeight(0.55f)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color.Transparent,
+                            MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                        ),
+                    ),
+                ),
+        )
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(horizontal = 5.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.65f)
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.20f)),
+            )
+            NuvioProgressBar(
+                progress = 0.45f,
+                modifier = Modifier.fillMaxWidth(),
+                height = 3.dp,
+                trackColor = MaterialTheme.colorScheme.surfaceTint.copy(alpha = 0.16f),
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ContinueWatchingLandscapeCard(
+    item: ContinueWatchingItem,
+    layout: ContinueWatchingLayout,
+    useEpisodeThumbnails: Boolean,
+    blurNextUp: Boolean,
+    onClick: (() -> Unit)?,
+    onLongClick: (() -> Unit)?,
+) {
+    Box(
+        modifier = Modifier
+            .width(layout.landscapeCardWidth)
+            .height(layout.landscapeCardHeight)
+            .clip(RoundedCornerShape(layout.cardRadius))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .combinedClickable(
+                enabled = onClick != null || onLongClick != null,
+                onClick = { onClick?.invoke() },
+                onLongClick = onLongClick,
+            ),
+    ) {
+        // Full-image backdrop
+        val artworkUrl = item.continueWatchingLandscapeArtworkUrl(useEpisodeThumbnails)
+        val shouldBlurArtwork = blurNextUp && useEpisodeThumbnails && item.isNextUp
+        if (artworkUrl != null) {
+            AsyncImage(
+                model = cloudLibraryDisplayArtworkUrl(artworkUrl),
+                contentDescription = item.title,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (shouldBlurArtwork) Modifier.blur(18.dp) else Modifier),
+                contentScale = if (item.isCloudLibraryItem()) ContentScale.Fit else ContentScale.Crop,
+            )
+        }
+
+        // Gradient overlay — fades from transparent to black at the bottom
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .fillMaxHeight(0.65f)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.88f)),
+                    ),
+                ),
+        )
+
+        // Up next / air date badge at top right
+        if (item.progressFraction <= 0f && item.seasonNumber != null && item.episodeNumber != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp),
+            ) {
+                val todayIsoDate = CurrentDateProvider.todayIsoDate()
+                val badgeText = when {
+                    item.isReleaseAlert -> {
+                        if (item.isNewSeasonRelease) stringResource(Res.string.cw_new_season)
+                        else stringResource(Res.string.cw_new_episode)
+                    }
+                    else -> {
+                        computeAirDateBadgeText(item.released, todayIsoDate, compact = true)
+                            ?: stringResource(Res.string.home_continue_watching_up_next)
+                    }
+                }
+                UpNextBadge(text = badgeText, compact = true, textSize = layout.posterBadgeTextSize)
+            }
+        }
+
+        // Title + meta + progress overlaid on gradient
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = layout.wideTitleSize,
+                    fontWeight = FontWeight.Bold,
+                ),
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val metaLine = localizedContinueWatchingMetaLine(item)
+            Text(
+                text = metaLine,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = layout.wideMetaSize,
+                    fontWeight = FontWeight.Medium,
+                ),
+                color = Color.White.copy(alpha = 0.75f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (item.progressFraction > 0f) {
+                NuvioProgressBar(
+                    progress = item.progressFraction,
+                    modifier = Modifier.fillMaxWidth(),
+                    height = layout.progressHeight,
+                    trackColor = Color.White.copy(alpha = 0.25f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun ArtworkPanel(
     imageUrl: String?,
     width: Dp,
@@ -701,6 +879,8 @@ internal data class ContinueWatchingLayout(
     val wideContentPadding: Dp,
     val posterCardWidth: Dp,
     val posterCardHeight: Dp,
+    val landscapeCardWidth: Dp,
+    val landscapeCardHeight: Dp,
     val cardRadius: Dp,
     val progressHeight: Dp,
     val wideTitleSize: androidx.compose.ui.unit.TextUnit,
@@ -723,6 +903,8 @@ internal fun rememberContinueWatchingLayout(maxWidthDp: Float): ContinueWatching
             wideContentPadding = 16.dp,
             posterCardWidth = 180.dp,
             posterCardHeight = 270.dp,
+            landscapeCardWidth = 290.dp,
+            landscapeCardHeight = 163.dp,
             cardRadius = 18.dp,
             progressHeight = 6.dp,
             wideTitleSize = 20.sp,
@@ -742,6 +924,8 @@ internal fun rememberContinueWatchingLayout(maxWidthDp: Float): ContinueWatching
             wideContentPadding = 14.dp,
             posterCardWidth = 160.dp,
             posterCardHeight = 240.dp,
+            landscapeCardWidth = 256.dp,
+            landscapeCardHeight = 144.dp,
             cardRadius = 16.dp,
             progressHeight = 5.dp,
             wideTitleSize = 18.sp,
@@ -761,6 +945,8 @@ internal fun rememberContinueWatchingLayout(maxWidthDp: Float): ContinueWatching
             wideContentPadding = 12.dp,
             posterCardWidth = 140.dp,
             posterCardHeight = 210.dp,
+            landscapeCardWidth = 224.dp,
+            landscapeCardHeight = 126.dp,
             cardRadius = 16.dp,
             progressHeight = 4.dp,
             wideTitleSize = 17.sp,
@@ -780,6 +966,8 @@ internal fun rememberContinueWatchingLayout(maxWidthDp: Float): ContinueWatching
             wideContentPadding = 12.dp,
             posterCardWidth = 120.dp,
             posterCardHeight = 180.dp,
+            landscapeCardWidth = 192.dp,
+            landscapeCardHeight = 108.dp,
             cardRadius = 16.dp,
             progressHeight = 4.dp,
             wideTitleSize = 16.sp,
