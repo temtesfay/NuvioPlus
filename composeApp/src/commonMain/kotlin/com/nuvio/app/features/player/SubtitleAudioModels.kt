@@ -29,6 +29,7 @@ data class AddonSubtitle(
     val url: String,
     val language: String,
     val display: String,
+    val addonName: String? = null,
     val isSelected: Boolean = false,
 )
 
@@ -37,6 +38,17 @@ enum class SubtitleTab {
     Addons,
     Style,
 }
+
+enum class AddonSubtitleStartupMode {
+    FAST_STARTUP,
+    PREFERRED_ONLY,
+    ALL_SUBTITLES,
+}
+
+const val SUBTITLE_DELAY_MIN_MS = -60_000
+const val SUBTITLE_DELAY_MAX_MS = 60_000
+const val SUBTITLE_DELAY_STEP_MS = 100
+const val SUBTITLE_AUTO_SYNC_REACTION_COMPENSATION_MS = 300L
 
 enum class SubtitleFontFamily(val displayName: String) {
     Auto("Auto"),
@@ -55,19 +67,58 @@ enum class SubtitleFontWeight(val displayName: String) {
 
 data class SubtitleStyleState(
     val textColor: Color = Color.White,
-    val outlineEnabled: Boolean = false,
-    val fontSizeSp: Int = 18,
-    val bottomOffset: Int = 20,
     val backgroundColor: Color = Color.Black,
     val backgroundOpacity: Float = 0f,
+    val outlineColor: Color = Color.Black,
+    val outlineEnabled: Boolean = false,
+    val outlineWidth: Int = 2,
+    val bold: Boolean = false,
+    val fontSizeSp: Int = 18,
+    val bottomOffset: Int = 20,
     val fontFamily: SubtitleFontFamily = SubtitleFontFamily.Auto,
     val fontWeight: SubtitleFontWeight = SubtitleFontWeight.Regular,
     val useSystemSubtitleSettings: Boolean = false,
+    val useForcedSubtitles: Boolean = false,
+    val showOnlyPreferredLanguages: Boolean = false,
 ) {
     companion object {
         val DEFAULT = SubtitleStyleState()
     }
 }
+
+data class SubtitleSyncCue(
+    val startTimeMs: Long,
+    val text: String,
+)
+
+data class SubtitleAutoSyncUiState(
+    val capturedPositionMs: Long? = null,
+    val cues: List<SubtitleSyncCue> = emptyList(),
+    val isLoading: Boolean = false,
+    val errorMessage: String? = null,
+)
+
+val SubtitleColorSwatches = listOf(
+    Color.White,
+    Color(0xFFFFD700),
+    Color(0xFF00E5FF),
+    Color(0xFFFF5C5C),
+    Color(0xFF00FF88),
+    Color(0xFF9B59B6),
+    Color(0xFFF97316),
+    Color(0xFF22C55E),
+    Color(0xFF3B82F6),
+    Color.Black,
+)
+
+val SubtitleBackgroundColorSwatches = listOf(
+    Color.Transparent,
+    Color.Black.copy(alpha = 0.55f),
+    Color(0xFF111827).copy(alpha = 0.72f),
+    Color(0xFF7F1D1D).copy(alpha = 0.68f),
+    Color(0xFF064E3B).copy(alpha = 0.68f),
+    Color(0xFF1E3A8A).copy(alpha = 0.68f),
+)
 
 /**
  * Maps a (family, weight) pair to an actual iOS PostScript font name that
@@ -117,19 +168,6 @@ private fun menloForWeight(weight: SubtitleFontWeight): String = when (weight) {
  * strip-renderer mode). Always returns false.
  */
 fun SubtitleStyleState.toMpvIsBold(): Boolean = false
-
-val SubtitleColorSwatches = listOf(
-    Color.White,
-    Color(0xFFFFD700),
-    Color(0xFF00E5FF),
-    Color(0xFFFF5C5C),
-    Color(0xFF00FF88),
-    Color(0xFF9B59B6),
-    Color(0xFFF97316),
-    Color(0xFF22C55E),
-    Color(0xFF3B82F6),
-    Color.Black,
-)
 
 fun Color.toStorageHexString(): String {
     fun component(value: Float): String =

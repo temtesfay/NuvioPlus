@@ -221,7 +221,10 @@ actual fun PlatformPlayerSurface(
                         bridge.applySubtitleStyle(
                             textColor = systemStyle.textColorHex
                                 ?: style.textColor.toMpvColorString(),
+                            backgroundColor = style.backgroundColor.toMpvColorString(),
+                            outlineColor = style.outlineColor.toMpvColorString(),
                             outlineSize = if (style.outlineEnabled) 1.65f else 0f,
+                            bold = systemStyle.isBold || style.bold,
                             fontSize = applySystemFontScale(
                                 style.toMpvSubtitleFontSize(),
                                 systemStyle.fontSizeScale,

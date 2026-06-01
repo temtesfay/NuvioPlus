@@ -13,6 +13,8 @@ internal expect object PlayerSettingsStorage {
     fun saveHoldToSpeedValue(speed: Float)
     fun loadExternalPlayerEnabled(): Boolean?
     fun saveExternalPlayerEnabled(enabled: Boolean)
+    fun loadExternalPlayerForwardSubtitles(): Boolean?
+    fun saveExternalPlayerForwardSubtitles(enabled: Boolean)
     fun loadExternalPlayerId(): String?
     fun saveExternalPlayerId(playerId: String?)
     fun loadPreferredAudioLanguage(): String?
@@ -41,6 +43,18 @@ internal expect object PlayerSettingsStorage {
     fun saveSubtitleFontWeight(fontWeight: String)
     fun loadSubtitleUseSystemSettings(): Boolean?
     fun saveSubtitleUseSystemSettings(enabled: Boolean)
+    fun loadSubtitleOutlineColor(): String?
+    fun saveSubtitleOutlineColor(colorHex: String)
+    fun loadSubtitleOutlineWidth(): Int?
+    fun saveSubtitleOutlineWidth(width: Int)
+    fun loadSubtitleBold(): Boolean?
+    fun saveSubtitleBold(enabled: Boolean)
+    fun loadSubtitleUseForcedSubtitles(): Boolean?
+    fun saveSubtitleUseForcedSubtitles(enabled: Boolean)
+    fun loadSubtitleShowOnlyPreferredLanguages(): Boolean?
+    fun saveSubtitleShowOnlyPreferredLanguages(enabled: Boolean)
+    fun loadAddonSubtitleStartupMode(): String?
+    fun saveAddonSubtitleStartupMode(mode: String)
     fun loadStreamReuseLastLinkEnabled(): Boolean?
     fun saveStreamReuseLastLinkEnabled(enabled: Boolean)
     fun loadStreamReuseLastLinkCacheHours(): Int?

@@ -22,20 +22,27 @@ actual object PlayerSettingsStorage {
     private const val holdToSpeedEnabledKey = "hold_to_speed_enabled"
     private const val holdToSpeedValueKey = "hold_to_speed_value"
     private const val externalPlayerEnabledKey = "external_player_enabled"
+    private const val externalPlayerForwardSubtitlesKey = "external_player_forward_subtitles"
     private const val externalPlayerIdKey = "external_player_id"
     private const val preferredAudioLanguageKey = "preferred_audio_language"
     private const val secondaryPreferredAudioLanguageKey = "secondary_preferred_audio_language"
     private const val preferredSubtitleLanguageKey = "preferred_subtitle_language"
     private const val secondaryPreferredSubtitleLanguageKey = "secondary_preferred_subtitle_language"
     private const val subtitleTextColorKey = "subtitle_text_color"
+    private const val subtitleBackgroundColorKey = "subtitle_background_color"
+    private const val subtitleOutlineColorKey = "subtitle_outline_color"
     private const val subtitleOutlineEnabledKey = "subtitle_outline_enabled"
+    private const val subtitleOutlineWidthKey = "subtitle_outline_width"
+    private const val subtitleBoldKey = "subtitle_bold"
     private const val subtitleFontSizeSpKey = "subtitle_font_size_sp"
     private const val subtitleBottomOffsetKey = "subtitle_bottom_offset"
-    private const val subtitleBackgroundColorKey = "subtitle_background_color"
     private const val subtitleBackgroundOpacityKey = "subtitle_background_opacity"
     private const val subtitleFontFamilyKey = "subtitle_font_family"
     private const val subtitleFontWeightKey = "subtitle_font_weight"
     private const val subtitleUseSystemSettingsKey = "subtitle_use_system_settings"
+    private const val subtitleUseForcedSubtitlesKey = "subtitle_use_forced_subtitles"
+    private const val subtitleShowOnlyPreferredLanguagesKey = "subtitle_show_only_preferred_languages"
+    private const val addonSubtitleStartupModeKey = "addon_subtitle_startup_mode"
     private const val streamReuseLastLinkEnabledKey = "stream_reuse_last_link_enabled"
     private const val streamReuseLastLinkCacheHoursKey = "stream_reuse_last_link_cache_hours"
     private const val decoderPriorityKey = "decoder_priority"
@@ -218,6 +225,16 @@ actual object PlayerSettingsStorage {
         NSUserDefaults.standardUserDefaults.setBool(enabled, forKey = ProfileScopedKey.of(externalPlayerEnabledKey))
     }
 
+    actual fun loadExternalPlayerForwardSubtitles(): Boolean? {
+        val defaults = NSUserDefaults.standardUserDefaults
+        val key = ProfileScopedKey.of(externalPlayerForwardSubtitlesKey)
+        return if (defaults.objectForKey(key) != null) defaults.boolForKey(key) else null
+    }
+
+    actual fun saveExternalPlayerForwardSubtitles(enabled: Boolean) {
+        NSUserDefaults.standardUserDefaults.setBool(enabled, forKey = ProfileScopedKey.of(externalPlayerForwardSubtitlesKey))
+    }
+
     actual fun loadExternalPlayerId(): String? {
         val defaults = NSUserDefaults.standardUserDefaults
         val key = ProfileScopedKey.of(externalPlayerIdKey)
@@ -373,6 +390,44 @@ actual object PlayerSettingsStorage {
 
     actual fun saveSubtitleUseSystemSettings(enabled: Boolean) {
         saveBoolean(subtitleUseSystemSettingsKey, enabled)
+    }
+
+    actual fun loadSubtitleOutlineColor(): String? =
+        NSUserDefaults.standardUserDefaults.stringForKey(ProfileScopedKey.of(subtitleOutlineColorKey))
+
+    actual fun saveSubtitleOutlineColor(colorHex: String) {
+        NSUserDefaults.standardUserDefaults.setObject(colorHex, forKey = ProfileScopedKey.of(subtitleOutlineColorKey))
+    }
+
+    actual fun loadSubtitleOutlineWidth(): Int? = loadInt(subtitleOutlineWidthKey)
+
+    actual fun saveSubtitleOutlineWidth(width: Int) {
+        saveInt(subtitleOutlineWidthKey, width)
+    }
+
+    actual fun loadSubtitleBold(): Boolean? = loadBoolean(subtitleBoldKey)
+
+    actual fun saveSubtitleBold(enabled: Boolean) {
+        saveBoolean(subtitleBoldKey, enabled)
+    }
+
+    actual fun loadSubtitleUseForcedSubtitles(): Boolean? = loadBoolean(subtitleUseForcedSubtitlesKey)
+
+    actual fun saveSubtitleUseForcedSubtitles(enabled: Boolean) {
+        saveBoolean(subtitleUseForcedSubtitlesKey, enabled)
+    }
+
+    actual fun loadSubtitleShowOnlyPreferredLanguages(): Boolean? = loadBoolean(subtitleShowOnlyPreferredLanguagesKey)
+
+    actual fun saveSubtitleShowOnlyPreferredLanguages(enabled: Boolean) {
+        saveBoolean(subtitleShowOnlyPreferredLanguagesKey, enabled)
+    }
+
+    actual fun loadAddonSubtitleStartupMode(): String? =
+        NSUserDefaults.standardUserDefaults.stringForKey(ProfileScopedKey.of(addonSubtitleStartupModeKey))
+
+    actual fun saveAddonSubtitleStartupMode(mode: String) {
+        NSUserDefaults.standardUserDefaults.setObject(mode, forKey = ProfileScopedKey.of(addonSubtitleStartupModeKey))
     }
 
     actual fun loadStreamReuseLastLinkEnabled(): Boolean? {
