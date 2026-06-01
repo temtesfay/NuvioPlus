@@ -116,10 +116,13 @@ final class MPVPlayerBridgeImpl: NSObject, NuvioPlayerBridge {
     func setSubtitleUrl(url: String) { playerVC?.addSubtitleUrl(url) }
     func clearExternalSubtitle() { playerVC?.removeExternalSubtitles() }
     func clearExternalSubtitleAndSelect(trackId: Int32) { playerVC?.removeExternalSubtitlesAndSelect(Int(trackId)) }
-    func applySubtitleStyle(textColor: String, outlineSize: Float, fontSize: Float, subPos: Int32, backColor: String, fontName: String, isBold: Bool) {
+    func applySubtitleStyle(textColor: String, backgroundColor: String, outlineColor: String, outlineSize: Float, bold: Bool, fontSize: Float, subPos: Int32, backColor: String, fontName: String, isBold: Bool) {
         playerVC?.applySubtitleStyle(
             textColor: textColor,
+            backgroundColor: backgroundColor,
+            outlineColor: outlineColor,
             outlineSize: outlineSize,
+            bold: bold,
             fontSize: fontSize,
             subPos: Int(subPos),
             backColor: backColor,
@@ -908,10 +911,10 @@ final class MPVPlayerViewController: UIViewController {
         }
     }
 
-    func applySubtitleStyle(textColor: String, outlineSize: Float, fontSize: Float, subPos: Int, backColor: String, fontName: String, isBold: Bool) {
+    func applySubtitleStyle(textColor: String, backgroundColor: String = "#FF000000", outlineColor: String = "#FF000000", outlineSize: Float, bold: Bool = false, fontSize: Float, subPos: Int, backColor: String, fontName: String, isBold: Bool) {
         guard mpv != nil else { return }
 
-        print("[Nuvio] applySubtitleStyle: text=\(textColor) back=\(backColor) font=\(fontName) bold=\(isBold)")
+        print("[Nuvio] applySubtitleStyle: text=\(textColor) back=\(backColor) outline=\(outlineColor) font=\(fontName) bold=\(bold || isBold)")
 
         // On Mac Catalyst, the app runs on a larger display but inherits subtitle
         // settings from the shared iOS/Mac profile.  Apply a scale factor so
@@ -953,7 +956,7 @@ final class MPVPlayerViewController: UIViewController {
             // ── UIKit overlay path ──────────────────────────────────────────
             // Font: reverse the ×3 scaling that Kotlin applies to get back to sp/pt.
             let ptSize = max(12, CGFloat(effectiveFontSize) / 3.0)
-            let uiFont = subtitleFont(postscriptName: fontName, isBold: isBold, pointSize: ptSize)
+            let uiFont = subtitleFont(postscriptName: fontName, isBold: isBold || bold, pointSize: ptSize)
             let textUIColor = uiColorRGB(hex: textColor)
             let bgUIColor   = uiColorAARRGGBB(hex: backColor)
             // Map subPos (0..150, 100 = bottom) to a bottom inset in points.
@@ -1005,7 +1008,7 @@ final class MPVPlayerViewController: UIViewController {
                 }
 
                 checkError(mpv_set_property_string(mpv, "sub-color", textColor))
-                checkError(mpv_set_property_string(mpv, "sub-outline-color", "#000000"))
+                checkError(mpv_set_property_string(mpv, "sub-outline-color", outlineColor.isEmpty ? "#FF000000" : outlineColor))
 
                 var outline = Double(effectiveOutlineSize)
                 checkError(mpv_set_property(mpv, "sub-outline-size", MPV_FORMAT_DOUBLE, &outline))
