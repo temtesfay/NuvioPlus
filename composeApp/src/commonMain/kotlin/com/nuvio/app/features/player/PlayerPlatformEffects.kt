@@ -28,6 +28,12 @@ expect fun ManagePlayerPictureInPicture(
 )
 
 @Composable
+expect fun rememberIsInPictureInPictureMode(): Boolean
+
+@Composable
+expect fun rememberEnterPictureInPicture(): (() -> Unit)?
+
+@Composable
 expect fun rememberPlayerGestureController(): PlayerGestureController?
 
 @Composable

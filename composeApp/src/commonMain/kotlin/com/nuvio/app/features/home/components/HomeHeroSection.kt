@@ -74,6 +74,7 @@ import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.nuvio.app.core.format.formatReleaseDateForDisplay
 import com.nuvio.app.features.home.MetaPreview
+import com.nuvio.app.isMacCatalyst
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -140,15 +141,19 @@ fun HomeHeroSection(
     }
 
     // Auto-advance:
-    //   • no trailer → wait 5 s then advance
+    //   • no trailer, enrichment still running (sources map empty) → wait 15 s so
+    //     slide 0 doesn't advance before the first YouTube extraction completes (~4-8s)
+    //   • no trailer, enrichment done (sources map has entries) → item has no trailer, wait 5 s
     //   • trailer present → primary advance via onEnded below; 90 s safety net
-    LaunchedEffect(pagerState.settledPage, trailerSource) {
+    val trailerSourcesEmpty = trailerSources.isEmpty()
+    LaunchedEffect(pagerState.settledPage, trailerSource, trailerSourcesEmpty) {
         if (items.size <= 1) return@LaunchedEffect
-        if (trailerSource == null) {
-            delay(5_000)
-        } else {
-            delay(90_000)
+        val delayMs = when {
+            trailerSource != null -> 90_000L
+            trailerSourcesEmpty -> 15_000L
+            else -> 5_000L
         }
+        delay(delayMs)
         val next = (pagerState.settledPage + 1) % items.size
         pagerState.animateScrollToPage(next)
     }
@@ -257,6 +262,11 @@ fun HomeHeroSection(
                 // (laidOut=false, isReady never fires) and the trailer times out on
                 // every slide after the first.
                 if (source != null) key(pagerState.settledPage) {
+                    // Capture the page this bridge was created for. onError / onEnded
+                    // check this before advancing so a bridge that fires just as the
+                    // user manually swipes away doesn't read the *new* settledPage and
+                    // skip the slide the user actually wanted to land on.
+                    val pageWhenStarted = pagerState.settledPage
                     HeroVideoSurface(
                         videoUrl = source.videoUrl,
                         audioUrl = source.audioUrl,
@@ -266,23 +276,18 @@ fun HomeHeroSection(
                         isMuted = isMuted,
                         onReady = { trailerReady = true },
                         onError = {
-                            // Advance immediately on error/timeout — trailerSource is
-                            // derived from the Repository map (not local mutable state)
-                            // so we just skip to the next slide rather than nulling it.
                             trailerReady = false
                             coroutineScope.launch {
-                                if (items.size > 1) {
-                                    val next = (pagerState.settledPage + 1) % items.size
-                                    pagerState.animateScrollToPage(next)
+                                if (items.size > 1 && pagerState.settledPage == pageWhenStarted) {
+                                    pagerState.animateScrollToPage((pageWhenStarted + 1) % items.size)
                                 }
                             }
                         },
                         onEnded = {
                             trailerReady = false
                             coroutineScope.launch {
-                                if (items.size > 1) {
-                                    val next = (pagerState.settledPage + 1) % items.size
-                                    pagerState.animateScrollToPage(next)
+                                if (items.size > 1 && pagerState.settledPage == pageWhenStarted) {
+                                    pagerState.animateScrollToPage((pageWhenStarted + 1) % items.size)
                                 }
                             }
                         },
@@ -605,7 +610,13 @@ internal fun homeHeroLayout(
     when {
         maxWidthDp >= 1200f -> HomeHeroLayout(
             isTablet = true,
-            heroHeight = (maxWidthDp * 0.50f).dp.coerceIn(480.dp, 620.dp),
+            // Mac Catalyst gets a taller hero so Continue Watching starts further down
+            // the page, giving the hero more visual presence on the larger screen.
+            heroHeight = if (isMacCatalyst) {
+                (maxWidthDp * 0.62f).dp.coerceIn(680.dp, 860.dp)
+            } else {
+                (maxWidthDp * 0.50f).dp.coerceIn(480.dp, 620.dp)
+            },
             contentMaxWidth = 640.dp,
             contentWidthFraction = 0.50f,
             contentHorizontalPadding = 56.dp,
@@ -615,7 +626,11 @@ internal fun homeHeroLayout(
         )
         maxWidthDp >= 840f -> HomeHeroLayout(
             isTablet = true,
-            heroHeight = (maxWidthDp * 0.54f).dp.coerceIn(440.dp, 580.dp),
+            heroHeight = if (isMacCatalyst) {
+                (maxWidthDp * 0.65f).dp.coerceIn(620.dp, 780.dp)
+            } else {
+                (maxWidthDp * 0.54f).dp.coerceIn(440.dp, 580.dp)
+            },
             contentMaxWidth = 560.dp,
             contentWidthFraction = 0.58f,
             contentHorizontalPadding = 40.dp,

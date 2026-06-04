@@ -104,6 +104,9 @@ private const val PlayerDoubleTapSeekResetDelayMs = 800L
 private const val PlayerLockedOverlayDurationMs = 2_000L
 private const val PlayerLeftGestureBoundary = 0.4f
 private const val PlayerRightGestureBoundary = 0.6f
+private const val PlayerEdgeGestureDeadZone = 0.12f
+private const val PlayerPipSwipeBottomZone = 0.20f
+private const val PlayerPipSwipeThreshold = 0.15f
 private const val PlayerVerticalGestureSensitivity = 1f
 private const val PlayerSeekProgressSyncDebounceMs = 700L
 private const val P2pInitialPreloadTargetBytes = 5_242_880L
@@ -464,6 +467,8 @@ fun PlayerScreen(
             isPlaying = playbackSnapshot.isPlaying,
             playerSize = layoutSize,
         )
+        val enterPiP = rememberEnterPictureInPicture()
+        val isInPipMode = rememberIsInPictureInPictureMode()
 
         val playbackSession = remember(
             contentType,
@@ -1167,6 +1172,7 @@ fun PlayerScreen(
         val showVolumeFeedbackState = rememberUpdatedState(::showVolumeFeedback)
         val clearLiveGestureFeedbackState = rememberUpdatedState(::clearLiveGestureFeedback)
         val revealLockedOverlayState = rememberUpdatedState(::revealLockedOverlay)
+        val enterPiPState = rememberUpdatedState(enterPiP)
         val isHoldToSpeedGestureActiveState = rememberUpdatedState(isHoldToSpeedGestureActive)
         val playerControlsLockedState = rememberUpdatedState(playerControlsLocked)
         val currentPositionMsState = rememberUpdatedState(playbackSnapshot.positionMs.coerceAtLeast(0L))
@@ -2373,8 +2379,10 @@ fun PlayerScreen(
                         val width = size.width.toFloat().takeIf { it > 0f } ?: return@awaitEachGesture
                         val height = size.height.toFloat().takeIf { it > 0f } ?: return@awaitEachGesture
                         val region = when {
-                            down.position.x < width * PlayerLeftGestureBoundary -> PlayerSideGesture.Brightness
-                            down.position.x > width * PlayerRightGestureBoundary -> PlayerSideGesture.Volume
+                            down.position.x > width * PlayerEdgeGestureDeadZone &&
+                                down.position.x < width * PlayerLeftGestureBoundary -> PlayerSideGesture.Brightness
+                            down.position.x > width * PlayerRightGestureBoundary &&
+                                down.position.x < width * (1f - PlayerEdgeGestureDeadZone) -> PlayerSideGesture.Volume
                             else -> null
                         }
 
@@ -2394,6 +2402,7 @@ fun PlayerScreen(
                         var gestureMode: PlayerGestureMode? = null
                         val horizontalSeekBaselineMs = currentPositionMsState.value
                         var horizontalSeekPreviewMs = horizontalSeekBaselineMs
+                        val isPipSwipeZone = down.position.y > height * (1f - PlayerPipSwipeBottomZone)
 
                         while (true) {
                             val event = awaitPointerEvent()
@@ -2403,6 +2412,15 @@ fun PlayerScreen(
                             val delta = change.position - change.previousPosition
                             totalDx += delta.x
                             totalDy += delta.y
+
+                            if (isPipSwipeZone &&
+                                totalDy < -(height * PlayerPipSwipeThreshold) &&
+                                abs(totalDy) > abs(totalDx)
+                            ) {
+                                enterPiPState.value?.invoke()
+                                clearLiveGestureFeedbackState.value()
+                                return@awaitEachGesture
+                            }
 
                             if (gestureMode == null) {
                                 val holdToSpeedActive = isHoldToSpeedGestureActiveState.value
@@ -2530,7 +2548,7 @@ fun PlayerScreen(
             }
 
             AnimatedVisibility(
-                visible = pausedOverlayVisible && !controlsVisible && !playerControlsLocked,
+                visible = pausedOverlayVisible && !controlsVisible && !playerControlsLocked && !isInPipMode,
                 enter = fadeIn(animationSpec = tween(durationMillis = 220)),
                 exit = fadeOut(animationSpec = tween(durationMillis = 180)),
             ) {
@@ -2550,7 +2568,7 @@ fun PlayerScreen(
             }
 
             AnimatedVisibility(
-                visible = (controlsVisible || showParentalGuide) && !playerControlsLocked,
+                visible = (controlsVisible || showParentalGuide) && !playerControlsLocked && !isInPipMode,
                 enter = fadeIn(),
                 exit = fadeOut(),
             ) {

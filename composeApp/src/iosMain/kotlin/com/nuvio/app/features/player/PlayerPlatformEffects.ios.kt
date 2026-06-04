@@ -3,8 +3,11 @@ package com.nuvio.app.features.player
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.unit.IntSize
 import com.nuvio.app.isMacCatalyst
 import platform.Foundation.NSNotificationCenter
@@ -53,6 +56,38 @@ actual fun ManagePlayerPictureInPicture(
     isPlaying: Boolean,
     playerSize: IntSize,
 ) = Unit
+
+@Composable
+actual fun rememberIsInPictureInPictureMode(): Boolean {
+    var isInPip by remember { mutableStateOf(false) }
+    DisposableEffect(Unit) {
+        val startObserver = NSNotificationCenter.defaultCenter.addObserverForName(
+            name = "NuvioPlayerPiPStarted",
+            `object` = null,
+            queue = NSOperationQueue.mainQueue,
+        ) { _ -> isInPip = true }
+        val stopObserver = NSNotificationCenter.defaultCenter.addObserverForName(
+            name = "NuvioPlayerPiPStopped",
+            `object` = null,
+            queue = NSOperationQueue.mainQueue,
+        ) { _ -> isInPip = false }
+        onDispose {
+            NSNotificationCenter.defaultCenter.removeObserver(startObserver)
+            NSNotificationCenter.defaultCenter.removeObserver(stopObserver)
+        }
+    }
+    return isInPip
+}
+
+@Composable
+actual fun rememberEnterPictureInPicture(): (() -> Unit)? = remember {
+    {
+        NSNotificationCenter.defaultCenter.postNotificationName(
+            aName = "NuvioPlayerEnterPiP",
+            `object` = null,
+        )
+    }
+}
 
 @Composable
 actual fun rememberPlayerGestureController(): PlayerGestureController? {

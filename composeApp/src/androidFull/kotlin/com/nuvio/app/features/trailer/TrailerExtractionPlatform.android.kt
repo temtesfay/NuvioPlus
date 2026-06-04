@@ -80,6 +80,7 @@ internal object TrailerExtractionPlatform {
         bestProgressive: StreamCandidate?,
         bestVideo: StreamCandidate?,
         bestAudio: StreamCandidate?,
+        preferFastStart: Boolean = false,
     ): TrailerPlaybackSource? = withContext(Dispatchers.IO) {
         val bestCombinedIsManifest = bestManifest != null &&
             (bestProgressive == null || bestManifest.height > bestProgressive.height)
@@ -160,6 +161,9 @@ internal object TrailerExtractionPlatform {
             }
         }.getOrDefault(false)
     }
+
+    // Android's ExoPlayer supports WebM/Opus natively — no filtering needed.
+    fun filterAudioCandidates(candidates: List<StreamCandidate>): List<StreamCandidate> = candidates
 
     private fun buildHeaders(source: Map<String, String>): Headers {
         val headers = Headers.Builder()

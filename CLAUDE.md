@@ -115,6 +115,19 @@ All settings repositories are **object singletons** with `MutableStateFlow<UiSta
 
 libmpv uses `#AARRGGBB` (alpha first, not last). `00` = transparent, `FF` = opaque. Helpers in `MPVPlayerBridge.swift`: `uiColorRGB(hex:)` for `#RRGGBB`, `uiColorAARRGGBB(hex:)` for MPV format, `overlayAlpha(fromAARRGGBB:)` to extract alpha byte.
 
+### Hero Trailer Pre-Warming
+
+Three-stage pipeline to minimise first-play latency on the home screen hero carousel:
+
+**Stage 1 — AVFoundation pre-warm** (`NuvioHeroPlayerBridge.swift`):
+`NuvioHeroPlayerRegistration.register()` (called at app startup before Compose) calls `prewarmAVFoundation()`, which creates and immediately releases a silent `AVPlayer` on a background thread. This forces AVFoundation, VideoToolbox, and CoreMedia to initialise during the profile selection screen rather than during the first bridge creation. Effect: "Bridge ready" drops from ~1900 ms (cold process) to ~100–200 ms for the first hero slide.
+
+**Stage 2 — Slide 0 early YouTube extraction** (`HomeRepository.enrichHeroTrailers`):
+As soon as slide 0's TMDB/Stremio keys are resolved, its YouTube URL extraction starts immediately in the stable repository scope — without waiting for the other 7 hero items to finish enrichment. Slides 1–7 pre-warm after `awaitAll()`. Saves 0.5–2 s depending on how staggered TMDB responses are. Tracked by `slide0EarlyPreWarmJob: Job?`; cancelled in `clear()` and whenever `publishCurrentState` detects a new hero-item set to prevent stale trailer data from a previous profile being written into `_trailerSources`.
+
+**Stage 3 — AVURLAsset manifest pre-buffering** (`HeroTrailerPreBufferCache.swift`):
+`TrailerPreBufferService.prefetch()` is called as each URL is extracted. It creates an `AVURLAsset` and calls `loadValuesAsynchronously(forKeys: ["playable"])` to download the HLS manifest. When the bridge is later created, `makeItem(videoUrl:)` returns an `AVPlayerItem` from the cached asset, skipping the manifest round-trip (~150–300 ms). The asset is retained so swiping back to a slide is equally fast.
+
 ## Mac Catalyst (macOS)
 
 The iOS app ships as a Mac Catalyst target (`macabi` slice). Platform detection and all Mac-specific behaviour is gated on `isMacCatalyst`.
@@ -185,6 +198,10 @@ Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak scene] _ in
     scene?.windows.forEach { patchScrollViews(in: $0) }
 }
 ```
+
+**Deceleration rate:** `patchScrollViews` unconditionally sets `scrollView.decelerationRate` to `0.9992` on every pass — higher than the UIKit default (`.normal` = `0.998`) to give more scroll momentum so lists coast further after a swipe, matching native macOS feel. The value is always overwritten (not guarded by a `<` check) because Compose can reset it to a lower value when it recycles its scroll containers.
+
+**Profile avatar caching:** `refreshProfileAvatarImageIfNeeded()` in `RootComposeViewController` uses `URLRequest(cachePolicy: .returnCacheDataElseLoad)` so `NSURLCache` serves the avatar image from disk on every launch after the first. The tab-bar profile icon appears instantly instead of waiting for a network round-trip.
 
 ### Landscape Poster Size
 

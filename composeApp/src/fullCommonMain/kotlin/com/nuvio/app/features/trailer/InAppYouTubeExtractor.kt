@@ -2,6 +2,8 @@ package com.nuvio.app.features.trailer
 
 import co.touchlab.kermit.Logger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
@@ -132,19 +134,19 @@ private val CLIENTS = listOf(
 class InAppYouTubeExtractor {
     private val log = Logger.withTag(TRAILER_EXTRACTOR_TAG)
 
-    suspend fun extractPlaybackSource(youtubeUrl: String): TrailerPlaybackSource? = withContext(Dispatchers.Default) {
+    suspend fun extractPlaybackSource(youtubeUrl: String, preferFastStart: Boolean = false): TrailerPlaybackSource? = withContext(Dispatchers.Default) {
         if (youtubeUrl.isBlank()) return@withContext null
 
         runCatching {
             withTimeout(EXTRACTOR_TIMEOUT_MS) {
-                extractPlaybackSourceInternal(youtubeUrl)
+                extractPlaybackSourceInternal(youtubeUrl, preferFastStart = preferFastStart)
             }
         }.onFailure {
             log.w { "Trailer extractor failed for $youtubeUrl: ${it.message}" }
         }.getOrNull()
     }
 
-    private suspend fun extractPlaybackSourceInternal(youtubeUrl: String): TrailerPlaybackSource? {
+    private suspend fun extractPlaybackSourceInternal(youtubeUrl: String, preferFastStart: Boolean = false): TrailerPlaybackSource? {
         val videoId = extractVideoId(youtubeUrl) ?: return null
 
         val watchUrl = "https://www.youtube.com/watch?v=$videoId&hl=en"
@@ -163,100 +165,111 @@ class InAppYouTubeExtractor {
         val apiKey = watchConfig.apiKey
             ?: throw IllegalStateException("Unable to extract INNERTUBE_API_KEY")
 
-        val progressive = mutableListOf<StreamCandidate>()
-        val adaptiveVideo = mutableListOf<StreamCandidate>()
-        val adaptiveAudio = mutableListOf<StreamCandidate>()
-        val manifestUrls = mutableListOf<Triple<String, Int, String>>()
+        // Fire all client requests in parallel — cuts extraction time from ~1.5 s
+        // (3 × 500 ms sequential) down to ~500 ms (single round-trip budget).
+        data class ClientResult(
+            val progressive: List<StreamCandidate>,
+            val adaptiveVideo: List<StreamCandidate>,
+            val adaptiveAudio: List<StreamCandidate>,
+            val manifestUrl: Triple<String, Int, String>?,
+        )
 
-        for (client in CLIENTS) {
-            runCatching {
-                val playerResponse = fetchPlayerResponse(
-                    apiKey = apiKey,
-                    videoId = videoId,
-                    client = client,
-                    visitorData = watchConfig.visitorData,
-                )
-
-                val streamingData = playerResponse.objectValue("streamingData") ?: return@runCatching
-                val hlsManifestUrl = streamingData.stringValue("hlsManifestUrl")
-                if (!hlsManifestUrl.isNullOrBlank()) {
-                    manifestUrls += Triple(client.key, client.priority, hlsManifestUrl)
-                }
-
-                for (format in streamingData.listObjectValue("formats")) {
-                    val url = format.stringValue("url") ?: continue
-                    val mimeType = format.stringValue("mimeType").orEmpty()
-                    if (!mimeType.contains("video/") && mimeType.isNotBlank()) continue
-
-                    val height = (
-                        format.numberValue("height")
-                            ?: parseQualityLabel(format.stringValue("qualityLabel"))?.toDouble()
-                            ?: 0.0
-                        ).toInt()
-                    val fps = (format.numberValue("fps") ?: 0.0).toInt()
-                    val bitrate = format.numberValue("bitrate")
-                        ?: format.numberValue("averageBitrate")
-                        ?: 0.0
-
-                    progressive += StreamCandidate(
-                        client = client.key,
-                        priority = client.priority,
-                        url = url,
-                        score = videoScore(height, fps, bitrate),
-                        hasN = hasNParam(url),
-                        height = height,
-                        fps = fps,
-                        ext = if (mimeType.contains("webm")) "webm" else "mp4",
-                    )
-                }
-
-                for (format in streamingData.listObjectValue("adaptiveFormats")) {
-                    val url = format.stringValue("url") ?: continue
-                    val mimeType = format.stringValue("mimeType").orEmpty()
-                    val hasVideo = mimeType.contains("video/")
-                    val hasAudio = mimeType.contains("audio/") || mimeType.startsWith("audio/")
-
-                    if (hasVideo) {
-                        val height = (
-                            format.numberValue("height")
-                                ?: parseQualityLabel(format.stringValue("qualityLabel"))?.toDouble()
-                                ?: 0.0
-                            ).toInt()
-                        val fps = (format.numberValue("fps") ?: 0.0).toInt()
-                        val bitrate = format.numberValue("bitrate")
-                            ?: format.numberValue("averageBitrate")
-                            ?: 0.0
-
-                        adaptiveVideo += StreamCandidate(
-                            client = client.key,
-                            priority = client.priority,
-                            url = url,
-                            score = videoScore(height, fps, bitrate),
-                            hasN = hasNParam(url),
-                            height = height,
-                            fps = fps,
-                            ext = if (mimeType.contains("webm")) "webm" else "mp4",
+        val clientResults = coroutineScope {
+            CLIENTS.map { client ->
+                async {
+                    runCatching {
+                        val playerResponse = fetchPlayerResponse(
+                            apiKey = apiKey,
+                            videoId = videoId,
+                            client = client,
+                            visitorData = watchConfig.visitorData,
                         )
-                    } else if (hasAudio) {
-                        val bitrate = format.numberValue("bitrate")
-                            ?: format.numberValue("averageBitrate")
-                            ?: 0.0
-                        val audioSampleRate = format.numberValue("audioSampleRate") ?: 0.0
+                        val streamingData = playerResponse.objectValue("streamingData")
+                            ?: return@runCatching null
 
-                        adaptiveAudio += StreamCandidate(
-                            client = client.key,
-                            priority = client.priority,
-                            url = url,
-                            score = audioScore(bitrate, audioSampleRate),
-                            hasN = hasNParam(url),
-                            height = 0,
-                            fps = 0,
-                            ext = if (mimeType.contains("webm")) "webm" else "m4a",
-                        )
-                    }
+                        val hlsManifestUrl = streamingData.stringValue("hlsManifestUrl")
+                        val manifest = if (!hlsManifestUrl.isNullOrBlank()) {
+                            Triple(client.key, client.priority, hlsManifestUrl)
+                        } else null
+
+                        val prog = mutableListOf<StreamCandidate>()
+                        val vidAdaptive = mutableListOf<StreamCandidate>()
+                        val audAdaptive = mutableListOf<StreamCandidate>()
+
+                        for (format in streamingData.listObjectValue("formats")) {
+                            val url = format.stringValue("url") ?: continue
+                            val mimeType = format.stringValue("mimeType").orEmpty()
+                            if (!mimeType.contains("video/") && mimeType.isNotBlank()) continue
+                            val height = (
+                                format.numberValue("height")
+                                    ?: parseQualityLabel(format.stringValue("qualityLabel"))?.toDouble()
+                                    ?: 0.0
+                                ).toInt()
+                            val fps = (format.numberValue("fps") ?: 0.0).toInt()
+                            val bitrate = format.numberValue("bitrate")
+                                ?: format.numberValue("averageBitrate") ?: 0.0
+                            prog += StreamCandidate(
+                                client = client.key,
+                                priority = client.priority,
+                                url = url,
+                                score = videoScore(height, fps, bitrate),
+                                hasN = hasNParam(url),
+                                height = height,
+                                fps = fps,
+                                ext = if (mimeType.contains("webm")) "webm" else "mp4",
+                            )
+                        }
+
+                        for (format in streamingData.listObjectValue("adaptiveFormats")) {
+                            val url = format.stringValue("url") ?: continue
+                            val mimeType = format.stringValue("mimeType").orEmpty()
+                            val hasVideo = mimeType.contains("video/")
+                            val hasAudio = mimeType.contains("audio/") || mimeType.startsWith("audio/")
+                            if (hasVideo) {
+                                val height = (
+                                    format.numberValue("height")
+                                        ?: parseQualityLabel(format.stringValue("qualityLabel"))?.toDouble()
+                                        ?: 0.0
+                                    ).toInt()
+                                val fps = (format.numberValue("fps") ?: 0.0).toInt()
+                                val bitrate = format.numberValue("bitrate")
+                                    ?: format.numberValue("averageBitrate") ?: 0.0
+                                vidAdaptive += StreamCandidate(
+                                    client = client.key,
+                                    priority = client.priority,
+                                    url = url,
+                                    score = videoScore(height, fps, bitrate),
+                                    hasN = hasNParam(url),
+                                    height = height,
+                                    fps = fps,
+                                    ext = if (mimeType.contains("webm")) "webm" else "mp4",
+                                )
+                            } else if (hasAudio) {
+                                val bitrate = format.numberValue("bitrate")
+                                    ?: format.numberValue("averageBitrate") ?: 0.0
+                                val audioSampleRate = format.numberValue("audioSampleRate") ?: 0.0
+                                audAdaptive += StreamCandidate(
+                                    client = client.key,
+                                    priority = client.priority,
+                                    url = url,
+                                    score = audioScore(bitrate, audioSampleRate),
+                                    hasN = hasNParam(url),
+                                    height = 0,
+                                    fps = 0,
+                                    ext = if (mimeType.contains("webm")) "webm" else "m4a",
+                                )
+                            }
+                        }
+                        ClientResult(prog, vidAdaptive, audAdaptive, manifest)
+                    }.getOrNull()
                 }
-            }
+            }.map { it.await() }
         }
+
+        val progressive = clientResults.filterNotNull().flatMap { it.progressive }.toMutableList()
+        val adaptiveVideo = clientResults.filterNotNull().flatMap { it.adaptiveVideo }.toMutableList()
+        val adaptiveAudio = clientResults.filterNotNull().flatMap { it.adaptiveAudio }.toMutableList()
+        val manifestUrls = clientResults.filterNotNull().mapNotNull { it.manifestUrl }.toMutableList()
 
         if (manifestUrls.isEmpty() && progressive.isEmpty() && adaptiveVideo.isEmpty() && adaptiveAudio.isEmpty()) {
             return null
@@ -285,23 +298,44 @@ class InAppYouTubeExtractor {
         }
 
         val bestProgressive = sortCandidates(progressive).firstOrNull()
-        // Prefer codecs that play natively on every platform: H.264 video (mp4)
-        // and AAC audio (m4a). YouTube's "best" by bitrate is usually VP9 + Opus,
-        // which iOS AVFoundation cannot decode. Fall back to "any best" only when
-        // no compatible codec is available.
-        val mp4Video = adaptiveVideo.filter { it.ext.equals("mp4", ignoreCase = true) }
-        val aacAudio = adaptiveAudio.filter { it.ext.equals("m4a", ignoreCase = true) }
-        val bestVideo = pickBestForClient(mp4Video, PREFERRED_SEPARATE_CLIENT)
-            ?: pickBestForClient(adaptiveVideo, PREFERRED_SEPARATE_CLIENT)
-        val bestAudio = pickBestForClient(aacAudio, PREFERRED_SEPARATE_CLIENT)
-            ?: pickBestForClient(adaptiveAudio, PREFERRED_SEPARATE_CLIENT)
+        val bestVideo = pickBestForClient(adaptiveVideo, PREFERRED_SEPARATE_CLIENT)
+        // Let the platform filter the audio candidates before selection so each
+        // platform can enforce codec compatibility (e.g. iOS needs M4A/AAC because
+        // AVFoundation cannot decode WebM/Opus, while Android handles any format).
+        val platformAudio = TrailerExtractionPlatform.filterAudioCandidates(adaptiveAudio)
+        val bestAudio = pickBestForClient(platformAudio, PREFERRED_SEPARATE_CLIENT)
 
-        return TrailerExtractionPlatform.buildPlaybackSource(
+        log.d {
+            "[$videoId] candidates: manifest=${manifestUrls.size} " +
+                "progressive=${progressive.size} " +
+                "adaptiveVideo=${adaptiveVideo.size} " +
+                "adaptiveAudio=${adaptiveAudio.size}"
+        }
+
+        val source = TrailerExtractionPlatform.buildPlaybackSource(
             bestManifest = bestManifest,
             bestProgressive = bestProgressive,
             bestVideo = bestVideo,
             bestAudio = bestAudio,
+            preferFastStart = preferFastStart,
         )
+
+        // Reflect the actual priority used by buildPlaybackSource:
+        // preferFastStart=true:  1. progressive muxed (360p)  2. adaptive  3. video-only
+        // preferFastStart=false: 1. adaptive split-stream  2. HLS/progressive  3. video-only
+        val streamType = when {
+            source == null -> "none — no playable source"
+            source.audioUrl != null -> "adaptive split-stream video=${bestVideo?.ext}/${bestVideo?.height}p audio=${bestAudio?.ext} client=${bestVideo?.client}"
+            bestVideo != null -> "adaptive video-only ${bestVideo.ext}/${bestVideo.height}p client=${bestVideo.client}"
+            bestManifest != null -> "HLS fallback ${bestManifest.height}p client=${bestManifest.client}"
+            bestProgressive != null -> "progressive muxed ${bestProgressive.ext} ${bestProgressive.height}p client=${bestProgressive.client}"
+            else -> "unknown"
+        }
+        log.d {
+            "[$videoId] selected: $streamType | audioUrl=${if (source?.audioUrl != null) "YES" else "none"}"
+        }
+
+        return source
     }
 
     private suspend fun fetchPlayerResponse(

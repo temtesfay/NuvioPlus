@@ -1,5 +1,7 @@
 import Foundation
 import UIKit
+import AVFoundation
+import AVKit
 import Libmpv
 import ComposeApp
 import MediaAccessibility
@@ -8,23 +10,310 @@ import ObjectiveC
 
 // MARK: - Player Bridge Implementation (Kotlin protocol conformance)
 
-final class MPVPlayerBridgeImpl: NSObject, NuvioPlayerBridge {
+final class MPVPlayerBridgeImpl: NSObject, NuvioPlayerBridge, AVPictureInPictureControllerDelegate {
 
     private var playerVC: MPVPlayerViewController?
+
+    // MARK: - PiP state
+    private var lastLoadedVideoUrl: String?
+    private var lastLoadedHeaders: [String: String] = [:]
+    private var pipAVPlayer: AVPlayer?
+    private var pipPlayerLayer: AVPlayerLayer?
+    private var pipController: AVPictureInPictureController?
+    private var pipHostView: UIView?
+    // true from preparePiP() until PiP willStart fires or cleanup runs
+    private var pipIsBeingPrepared = false
+    private var pipPossibleObservation: NSKeyValueObservation?
+    private var pipItemStatusObservation: NSKeyValueObservation?
+    private var pipBgTask: UIBackgroundTaskIdentifier = .invalid
+    private var enterPiPObserver: NSObjectProtocol?
+    private var willResignActiveForPiPObserver: NSObjectProtocol?
+    private var didEnterBackgroundForPiPObserver: NSObjectProtocol?
+    private var becameActiveForPiPObserver: NSObjectProtocol?
+
+    // Keeps this bridge alive through the full PiP lifecycle even after the
+    // Kotlin/Compose player screen is disposed and bridge.destroy() is called.
+    private static var activePipBridge: MPVPlayerBridgeImpl?
 
     func createPlayerViewController() -> UIViewController {
         let vc = MPVPlayerViewController()
         self.playerVC = vc
+        setupPiPNotificationObserver()
         return vc
     }
 
-    func loadFile(url: String) { playerVC?.loadFile(url) }
+    func loadFile(url: String) {
+        lastLoadedVideoUrl = url
+        lastLoadedHeaders = [:]
+        playerVC?.loadFile(url)
+    }
+
     func loadFileWithAudio(videoUrl: String, audioUrl: String?, headersJson: String?) {
+        lastLoadedVideoUrl = videoUrl
+        lastLoadedHeaders = parseRequestHeaders(headersJson)
         playerVC?.loadFile(
             videoUrl,
             audioUrl: audioUrl,
             requestHeaders: parseRequestHeaders(headersJson)
         )
+    }
+
+    // MARK: - PiP setup
+
+    private func setupPiPNotificationObserver() {
+        print("[Nuvio PiP] registering observers")
+
+        // Manual trigger: user swiped up or tapped the PiP button inside the app
+        enterPiPObserver = NotificationCenter.default.addObserver(
+            forName: Notification.Name("NuvioPlayerEnterPiP"),
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            print("[Nuvio PiP] NuvioPlayerEnterPiP received")
+            self?.preparePiP()
+            self?.activatePiP()
+        }
+
+        // Phase 1: prepare AVPlayer + controller while the app is still transitioning
+        // to background (willResignActive fires before the transition animation starts,
+        // giving the player time to reach isPictureInPicturePossible = true).
+        willResignActiveForPiPObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willResignActiveNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            print("[Nuvio PiP] willResignActive → preparing PiP")
+            self?.preparePiP()
+        }
+
+        // Phase 2: app is confirmed in background — now it is safe to call
+        // startPictureInPicture(); isPictureInPicturePossible is true by this point
+        // because the player has had the transition window to load.
+        didEnterBackgroundForPiPObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            print("[Nuvio PiP] didEnterBackground → activating PiP")
+            self?.activatePiP()
+        }
+
+        // Cancel: app returned to foreground before PiP ever started (e.g. user
+        // opened Control Center but did not actually press Home).
+        becameActiveForPiPObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self = self, self.pipIsBeingPrepared else { return }
+            guard !(self.pipController?.isPictureInPictureActive ?? false) else { return }
+            print("[Nuvio PiP] didBecomeActive before PiP started → cancelling")
+            self.cleanupPiP()
+        }
+    }
+
+    // Phase 1: create the AVPlayer + layer + controller. Does NOT call
+    // startPictureInPicture() and does NOT pause MPV — safe to call from
+    // willResignActive where we may not yet know if the app is really backgrounding.
+    private func preparePiP() {
+        guard !pipIsBeingPrepared && pipController == nil else { return }
+        guard AVPictureInPictureController.isPictureInPictureSupported() else {
+            print("[Nuvio PiP] PiP not supported on this device")
+            return
+        }
+        guard let videoUrlString = lastLoadedVideoUrl, let videoUrl = URL(string: videoUrlString) else {
+            print("[Nuvio PiP] no URL stored, cannot prepare")
+            return
+        }
+        print("[Nuvio PiP] creating AVPlayer for: \(videoUrlString.prefix(80))")
+        try? AVAudioSession.sharedInstance().setActive(true)
+
+        // Keep the process alive during the background transition so we have time
+        // to call startPictureInPicture() once isPictureInPicturePossible becomes true.
+        pipBgTask = UIApplication.shared.beginBackgroundTask(withName: "NuvioPiP") { [weak self] in
+            self?.endPipBgTask()
+        }
+
+        var assetOptions: [String: Any] = [:]
+        if !lastLoadedHeaders.isEmpty {
+            assetOptions["AVURLAssetHTTPHeaderFieldsKey"] = lastLoadedHeaders
+        }
+        let asset = AVURLAsset(url: videoUrl, options: assetOptions.isEmpty ? nil : assetOptions)
+        let playerItem = AVPlayerItem(asset: asset)
+        let avPlayer = AVPlayer(playerItem: playerItem)
+
+        let currentMs = playerVC?.positionMs ?? 0
+        let seekTime = CMTime(value: currentMs, timescale: 1000)
+        print("[Nuvio PiP] seeking to \(currentMs)ms")
+
+        let window = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .flatMap({ $0.windows })
+            .first(where: { $0.isKeyWindow })
+            ?? UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .flatMap({ $0.windows })
+                .first
+            ?? UIApplication.shared.windows.first
+        guard let window else {
+            print("[Nuvio PiP] no window found, aborting")
+            endPipBgTask()
+            return
+        }
+        print("[Nuvio PiP] window found: \(window)")
+
+        let hostView = UIView(frame: CGRect(x: 0, y: 0, width: 2, height: 2))
+        hostView.alpha = 0.01
+        hostView.clipsToBounds = true
+        window.addSubview(hostView)
+
+        let playerLayer = AVPlayerLayer(player: avPlayer)
+        playerLayer.frame = hostView.bounds
+        hostView.layer.addSublayer(playerLayer)
+
+        guard let controller = AVPictureInPictureController(playerLayer: playerLayer) else {
+            print("[Nuvio PiP] AVPictureInPictureController init returned nil")
+            avPlayer.pause()
+            playerLayer.removeFromSuperlayer()
+            hostView.removeFromSuperview()
+            endPipBgTask()
+            return
+        }
+        print("[Nuvio PiP] controller created")
+        controller.delegate = self
+
+        pipAVPlayer = avPlayer
+        pipPlayerLayer = playerLayer
+        pipController = controller
+        pipHostView = hostView
+        pipIsBeingPrepared = true
+
+        // Hold a strong reference so the bridge (and its delegate) survives
+        // even after Compose disposes the player screen and calls destroy().
+        MPVPlayerBridgeImpl.activePipBridge = self
+
+        avPlayer.volume = 0
+        avPlayer.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: CMTime(seconds: 2, preferredTimescale: 600)) { [weak self] finished in
+            print("[Nuvio PiP] seek finished=\(finished)")
+            // play() (muted) is required: without an active play request AVFoundation
+            // never buffers the stream, the item stays in .unknown status, and
+            // isPictureInPicturePossible never becomes true → PiP times out every time.
+            self?.pipAVPlayer?.play()
+        }
+
+        // Detect early failure (e.g. unsupported container like MKV) so we can
+        // clean up immediately instead of waiting for the 5-second timeout.
+        let item = playerItem
+        pipItemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] _, change in
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                switch item.status {
+                case .failed:
+                    print("[Nuvio PiP] player item failed (\(item.error?.localizedDescription ?? "?")) — format may be unsupported by AVPlayer (e.g. MKV)")
+                    self.cleanupPiP()
+                case .readyToPlay:
+                    print("[Nuvio PiP] player item readyToPlay")
+                    self.activatePiP()
+                default:
+                    break
+                }
+            }
+        }
+    }
+
+    // Phase 2: trigger the actual PiP window. Called from didEnterBackground (auto)
+    // or immediately after preparePiP() for the manual swipe gesture path.
+    private func activatePiP() {
+        guard let controller = pipController, pipIsBeingPrepared else {
+            print("[Nuvio PiP] activatePiP: not prepared or already active, skipping")
+            return
+        }
+        guard !controller.isPictureInPictureActive else {
+            print("[Nuvio PiP] activatePiP: already active")
+            return
+        }
+
+        if controller.isPictureInPicturePossible {
+            print("[Nuvio PiP] isPictureInPicturePossible=true, calling startPictureInPicture")
+            controller.startPictureInPicture()
+        } else {
+            // Player not ready yet — observe and fire as soon as it is.
+            print("[Nuvio PiP] isPictureInPicturePossible=false, observing...")
+            pipPossibleObservation = controller.observe(\.isPictureInPicturePossible, options: [.new]) { [weak self] ctrl, change in
+                guard change.newValue == true else { return }
+                DispatchQueue.main.async {
+                    print("[Nuvio PiP] isPictureInPicturePossible became true, calling startPictureInPicture")
+                    ctrl.startPictureInPicture()
+                }
+                self?.pipPossibleObservation?.invalidate()
+                self?.pipPossibleObservation = nil
+            }
+            // Safety net: give up after 5 s if the player never becomes possible.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                guard let self = self else { return }
+                guard self.pipController != nil, !(self.pipController?.isPictureInPictureActive ?? false) else { return }
+                print("[Nuvio PiP] timeout waiting for isPictureInPicturePossible, cleaning up")
+                self.cleanupPiP()
+            }
+        }
+    }
+
+    private func endPipBgTask() {
+        guard pipBgTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(pipBgTask)
+        pipBgTask = .invalid
+    }
+
+    private func cleanupPiP() {
+        pipIsBeingPrepared = false
+        pipPossibleObservation?.invalidate()
+        pipPossibleObservation = nil
+        pipController?.delegate = nil
+        pipController = nil
+        pipAVPlayer?.pause()
+        pipAVPlayer = nil
+        pipPlayerLayer?.removeFromSuperlayer()
+        pipPlayerLayer = nil
+        pipHostView?.removeFromSuperview()
+        pipHostView = nil
+        MPVPlayerBridgeImpl.activePipBridge = nil
+        endPipBgTask()
+    }
+
+    // MARK: - AVPictureInPictureControllerDelegate
+
+    func pictureInPictureControllerWillStartPictureInPicture(_ controller: AVPictureInPictureController) {
+        print("[Nuvio PiP] willStart")
+        pipIsBeingPrepared = false
+        endPipBgTask()
+        playerVC?.pausePlayback()
+        pipAVPlayer?.volume = 1.0
+        NotificationCenter.default.post(name: Notification.Name("NuvioPlayerPiPStarted"), object: nil)
+    }
+
+    func pictureInPictureControllerDidStopPictureInPicture(_ controller: AVPictureInPictureController) {
+        NotificationCenter.default.post(name: Notification.Name("NuvioPlayerPiPStopped"), object: nil)
+        cleanupPiP()
+    }
+
+    func pictureInPictureController(
+        _ controller: AVPictureInPictureController,
+        failedToStartPictureInPictureWithError error: Error
+    ) {
+        print("[Nuvio PiP] failed to start: \(error.localizedDescription)")
+        NotificationCenter.default.post(name: Notification.Name("NuvioPlayerPiPStopped"), object: nil)
+        playerVC?.playPlayback()
+        cleanupPiP()
+    }
+
+    func pictureInPictureController(
+        _ controller: AVPictureInPictureController,
+        restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void
+    ) {
+        let avPositionSeconds = CMTimeGetSeconds(pipAVPlayer?.currentTime() ?? .zero)
+        if avPositionSeconds > 0 {
+            let positionMs = Int64(avPositionSeconds * 1000)
+            playerVC?.seekToMs(positionMs)
+        }
+        playerVC?.playPlayback()
+        cleanupPiP()
+        completionHandler(true)
     }
     func play() { playerVC?.playPlayback() }
     func pause() { playerVC?.pausePlayback() }
@@ -63,6 +352,7 @@ final class MPVPlayerBridgeImpl: NSObject, NuvioPlayerBridge {
         )
     }
     func setPlaybackSpeed(speed: Float) { playerVC?.setSpeed(speed) }
+    func setMuted(muted: Bool) { playerVC?.setMuted(muted) }
     func setResizeMode(mode: Int32) { playerVC?.setResize(Int(mode)) }
 
     // Audio tracks
@@ -270,6 +560,20 @@ final class MPVPlayerBridgeImpl: NSObject, NuvioPlayerBridge {
     func getErrorMessage() -> String { playerVC?.currentErrorMessage ?? "" }
 
     func destroy() {
+        for observer in [enterPiPObserver, willResignActiveForPiPObserver,
+                         didEnterBackgroundForPiPObserver, becameActiveForPiPObserver].compactMap({ $0 }) {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        enterPiPObserver = nil
+        willResignActiveForPiPObserver = nil
+        didEnterBackgroundForPiPObserver = nil
+        becameActiveForPiPObserver = nil
+
+        // If PiP is active or starting, leave it running — cleanupPiP() will
+        // be called by the delegate when the PiP window is dismissed.
+        if pipController == nil {
+            cleanupPiP()
+        }
         playerVC?.destroyPlayer()
         playerVC = nil
     }
@@ -813,6 +1117,10 @@ final class MPVPlayerViewController: UIViewController {
         guard mpv != nil else { return }
         var s = Double(speed)
         mpv_set_property(mpv, "speed", MPV_FORMAT_DOUBLE, &s)
+    }
+
+    func setMuted(_ muted: Bool) {
+        setFlag("mute", muted)
     }
 
     func setResize(_ mode: Int) {

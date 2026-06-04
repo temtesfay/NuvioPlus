@@ -53,6 +53,16 @@ object HomeRepository {
     private var collectionHeroJob: Job? = null
     private var collectionHeroRequestKey: String? = null
     private var heroTrailerEnrichmentJob: Job? = null
+    // Pre-warm job is tracked separately from heroTrailerEnrichmentJob because it is
+    // launched on the stable repository scope and is NOT automatically cancelled when
+    // heroTrailerEnrichmentJob is cancelled. Without explicit tracking, a profile switch
+    // that calls clear() would cancel enrichment but leave the old pre-warm running,
+    // which then writes the previous profile's trailer sources back into _trailerSources.
+    private var heroTrailerPreWarmJob: Job? = null
+    // Slide 0 pre-warm is kicked off the moment its TMDB/Stremio keys are resolved,
+    // without waiting for the other 7 slides to finish enrichment. Tracked separately
+    // so clear() and publishCurrentState can cancel it on profile switch / hero reset.
+    private var slide0EarlyPreWarmJob: Job? = null
     // The hero-item stableKeys ("type:id") that the most recently STARTED enrichment
     // run was launched for. publishCurrentState compares against this before deciding
     // whether to cancel + restart enrichment. If the hero items haven't changed (same
@@ -210,6 +220,10 @@ object HomeRepository {
         lastEnrichedHeroKeys = emptyList()
         heroTrailerEnrichmentJob?.cancel()
         heroTrailerEnrichmentJob = null
+        slide0EarlyPreWarmJob?.cancel()
+        slide0EarlyPreWarmJob = null
+        heroTrailerPreWarmJob?.cancel()
+        heroTrailerPreWarmJob = null
         _uiState.value = HomeUiState()
         _trailerSources.value = emptyMap()
     }
@@ -304,6 +318,8 @@ object HomeRepository {
         if (heroKeys != lastEnrichedHeroKeys) {
             lastEnrichedHeroKeys = heroKeys
             heroTrailerEnrichmentJob?.cancel()
+            slide0EarlyPreWarmJob?.cancel()
+            slide0EarlyPreWarmJob = null
             if (heroItems.isNotEmpty()) {
                 heroTrailerEnrichmentJob = scope.launch {
                     enrichHeroTrailers(heroItems)
@@ -326,74 +342,87 @@ object HomeRepository {
         println("🔵 (HeroTrailer) Enriching ${items.size} hero items for trailers (language=$language)")
 
         val enriched = coroutineScope {
-            items.map { item ->
+            items.mapIndexed { index, item ->
                 async {
                     val cacheKey = "${item.type}:${item.id}"
 
-                    // 0) Cache hit — skip the network entirely.
-                    if (trailerKeyCache.containsKey(cacheKey)) {
+                    val enrichedItem = if (trailerKeyCache.containsKey(cacheKey)) {
+                        // Cache hit — skip the network entirely.
                         val cached = trailerKeyCache[cacheKey].orEmpty()
-                        return@async item.copy(
+                        item.copy(
                             youtubeTrailerKey = cached.firstOrNull(),
                             alternateTrailerKeys = cached.drop(1),
                         )
+                    } else {
+                        // Fetch TMDB and Stremio in parallel. We always want BOTH so the
+                        // YouTube extractor has fallbacks when the primary key is dead
+                        // (geo-blocked, age-gated, signature changed).
+                        coroutineScope {
+                            val tmdbDeferred = async {
+                                runCatching {
+                                    TmdbMetadataService.fetchHeroTrailerKey(
+                                        id = item.id,
+                                        type = item.type,
+                                        language = language,
+                                    )
+                                }.getOrElse { e ->
+                                    println("🟡 (HeroTrailer) TMDB fetch failed for ${item.id}: ${e.message}")
+                                    null
+                                }
+                            }
+                            val stremioDeferred = async {
+                                runCatching {
+                                    val meta = MetaDetailsRepository.fetch(type = item.type, id = item.id)
+                                    val youtubeTrailers = meta?.trailers
+                                        ?.filter { it.site.equals("YouTube", ignoreCase = true) }
+                                        .orEmpty()
+                                    // Officials first, then any others. Distinct so we don't
+                                    // duplicate the same video.
+                                    (youtubeTrailers.filter { it.official } + youtubeTrailers.filterNot { it.official })
+                                        .map { it.key }
+                                        .filter { it.isNotBlank() }
+                                        .distinct()
+                                }.getOrElse { e ->
+                                    println("🟡 (HeroTrailer) Stremio fallback failed for ${item.id}: ${e.message}")
+                                    emptyList<String>()
+                                }
+                            }
+
+                            val tmdbKey = tmdbDeferred.await()
+                            val stremioKeys = stremioDeferred.await()
+
+                            // Build ordered key list: TMDB first (if present), then any
+                            // Stremio keys that aren't dupes. The extractor will try them
+                            // in order via HeroTrailerSourceCache.resolveFirstAvailable.
+                            val combined = buildList {
+                                if (!tmdbKey.isNullOrBlank()) add(tmdbKey)
+                                stremioKeys.forEach { if (it != tmdbKey) add(it) }
+                            }
+
+                            if (currentCoroutineContext().isActive) {
+                                trailerKeyCache[cacheKey] = combined
+                            }
+
+                            println("🔵 (HeroTrailer) ${item.name} → keys=${combined.size} (primary=${combined.firstOrNull() ?: "null"})")
+                            item.copy(
+                                youtubeTrailerKey = combined.firstOrNull(),
+                                alternateTrailerKeys = combined.drop(1),
+                            )
+                        }
                     }
 
-                    // Fetch TMDB and Stremio in parallel. We always want BOTH so the
-                    // YouTube extractor has fallbacks when the primary key is dead
-                    // (geo-blocked, age-gated, signature changed).
-                    coroutineScope {
-                        val tmdbDeferred = async {
-                            runCatching {
-                                TmdbMetadataService.fetchHeroTrailerKey(
-                                    id = item.id,
-                                    type = item.type,
-                                    language = language,
-                                )
-                            }.getOrElse { e ->
-                                println("🟡 (HeroTrailer) TMDB fetch failed for ${item.id}: ${e.message}")
-                                null
-                            }
-                        }
-                        val stremioDeferred = async {
-                            runCatching {
-                                val meta = MetaDetailsRepository.fetch(type = item.type, id = item.id)
-                                val youtubeTrailers = meta?.trailers
-                                    ?.filter { it.site.equals("YouTube", ignoreCase = true) }
-                                    .orEmpty()
-                                // Officials first, then any others. Distinct so we don't
-                                // duplicate the same video.
-                                (youtubeTrailers.filter { it.official } + youtubeTrailers.filterNot { it.official })
-                                    .map { it.key }
-                                    .filter { it.isNotBlank() }
-                                    .distinct()
-                            }.getOrElse { e ->
-                                println("🟡 (HeroTrailer) Stremio fallback failed for ${item.id}: ${e.message}")
-                                emptyList<String>()
-                            }
-                        }
-
-                        val tmdbKey = tmdbDeferred.await()
-                        val stremioKeys = stremioDeferred.await()
-
-                        // Build ordered key list: TMDB first (if present), then any
-                        // Stremio keys that aren't dupes. The extractor will try them
-                        // in order via HeroTrailerSourceCache.resolveFirstAvailable.
-                        val combined = buildList {
-                            if (!tmdbKey.isNullOrBlank()) add(tmdbKey)
-                            stremioKeys.forEach { if (it != tmdbKey) add(it) }
-                        }
-
-                        if (currentCoroutineContext().isActive) {
-                            trailerKeyCache[cacheKey] = combined
-                        }
-
-                        println("🔵 (HeroTrailer) ${item.name} → keys=${combined.size} (primary=${combined.firstOrNull() ?: "null"})")
-                        item.copy(
-                            youtubeTrailerKey = combined.firstOrNull(),
-                            alternateTrailerKeys = combined.drop(1),
-                        )
+                    // Slide 0: kick off YouTube URL extraction immediately in the stable
+                    // scope the moment its TMDB/Stremio keys are known — without waiting
+                    // for the other 7 slides to finish enrichment. On a typical session
+                    // this saves 0.5-2 s of first-trailer startup latency because the
+                    // YouTube extractor for slide 0 starts while the other slides are still
+                    // fetching metadata. Slides 1-7 are pre-warmed after awaitAll() below.
+                    if (index == 0 && enrichedItem.youtubeTrailerKey != null) {
+                        slide0EarlyPreWarmJob?.cancel()
+                        slide0EarlyPreWarmJob = scope.launch { prewarmSingleSlide(enrichedItem, slideIndex = 0) }
                     }
+
+                    enrichedItem
                 }
             }.awaitAll()
         }
@@ -401,39 +430,14 @@ object HomeRepository {
         val withTrailers = enriched.count { it.youtubeTrailerKey != null }
         println("🟢 (HeroTrailer) Enrichment complete — $withTrailers/${items.size} items have trailer keys")
 
-        // Pre-warm: resolve ALL candidate keys for every hero item in the stable
-        // Repository scope (never cancelled by Compose composition lifecycle).
-        // Results are published to _trailerSources so HomeHeroSection can read
-        // them via a simple map lookup — no async extraction in the composable.
-        //
-        // Each item runs in parallel; within each item keys are tried in order
-        // (TMDB primary first, Stremio alternates after) and we stop at the first
-        // working URL. Limiting to 5 candidates per item keeps YouTube load sane.
-        scope.launch {
+        // Pre-warm slides 1-7 in the stable Repository scope (slide 0 was already
+        // started above the moment its keys were resolved). Each item runs in parallel;
+        // within each item keys are tried in order and we stop at the first working URL.
+        heroTrailerPreWarmJob?.cancel()
+        heroTrailerPreWarmJob = scope.launch {
             coroutineScope {
-                enriched.map { item ->
-                    async {
-                        val stableKey = item.stableKey()
-                        val candidateKeys = buildList {
-                            val primary = item.youtubeTrailerKey
-                            if (!primary.isNullOrBlank()) add(primary)
-                            addAll(item.alternateTrailerKeys.take(4).filter { it.isNotBlank() })
-                        }
-                        if (candidateKeys.isEmpty()) return@async
-                        val source = runCatching {
-                            HeroTrailerSourceCache.resolveFirstAvailable(candidateKeys)
-                        }.getOrNull()
-                        if (source != null) {
-                            _trailerSources.update { it + (stableKey to source) }
-                            println("🟢 (HeroTrailer) Pre-warm resolved ${item.name} → ${source.videoUrl.take(60)}…")
-                            // Immediately start buffering the HLS manifest + first segment
-                            // in the background so AVPlayer is nearly ready by the time the
-                            // user reaches this slide (reduces ready time from ~4s to ~1s).
-                            TrailerPreBufferService.prefetch(source.videoUrl, source.audioUrl)
-                        } else {
-                            println("🟡 (HeroTrailer) Pre-warm: no playable source for ${item.name}")
-                        }
-                    }
+                enriched.drop(1).mapIndexed { i, item ->
+                    async { prewarmSingleSlide(item, slideIndex = i + 1) }
                 }.awaitAll()
             }
             println("🟢 (HeroTrailer) Pre-warm complete for all ${enriched.size} hero items")
@@ -452,6 +456,36 @@ object HomeRepository {
         val enrichedIds = enriched.map { it.stableKey() }
         if (cachedIds == enrichedIds) {
             cachedHeroItems = enriched
+        }
+    }
+
+    private suspend fun prewarmSingleSlide(item: MetaPreview, slideIndex: Int) {
+        val stableKey = item.stableKey()
+        val candidateKeys = buildList {
+            val primary = item.youtubeTrailerKey
+            if (!primary.isNullOrBlank()) add(primary)
+            addAll(item.alternateTrailerKeys.take(4).filter { it.isNotBlank() })
+        }
+        if (candidateKeys.isEmpty()) return
+        // Slide 0 gets a 360p muxed MP4 (single AVPlayer, fast startup).
+        // All other slides use the quality adaptive split-stream path.
+        val preferFastStart = slideIndex == 0
+        val source = runCatching {
+            HeroTrailerSourceCache.resolveFirstAvailable(candidateKeys, preferFastStart = preferFastStart)
+        }.getOrNull()
+        if (source != null) {
+            _trailerSources.update { it + (stableKey to source) }
+            println("🟢 (HeroTrailer) Pre-warm resolved ${item.name} (slide=$slideIndex fast=$preferFastStart) → ${source.videoUrl.take(60)}…")
+            TrailerPreBufferService.prefetch(source.videoUrl, source.audioUrl)
+        } else {
+            println("🟡 (HeroTrailer) Pre-warm: no playable source for ${item.name}")
+        }
+        // Slide 0 was pre-warmed at 360p for fast home-screen startup. Also warm the
+        // quality path so the detail screen gets full resolution without re-extracting.
+        if (slideIndex == 0 && source != null) {
+            runCatching {
+                HeroTrailerSourceCache.resolveFirstAvailable(candidateKeys, preferFastStart = false)
+            }
         }
     }
 

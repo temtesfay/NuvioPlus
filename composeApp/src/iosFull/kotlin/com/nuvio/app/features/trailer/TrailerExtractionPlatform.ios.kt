@@ -71,51 +71,62 @@ internal object TrailerExtractionPlatform {
         )
     }
 
+    // AVFoundation (used by the hero trailer player) only supports M4A/AAC for
+    // external audio streams — WebM/Opus is not decoded. Prefer M4A candidates;
+    // fall back to the full list only when no M4A stream is available at all.
+    fun filterAudioCandidates(candidates: List<StreamCandidate>): List<StreamCandidate> {
+        val m4aCandidates = candidates.filter { it.ext == "m4a" }
+        return m4aCandidates.ifEmpty { candidates }
+    }
+
     suspend fun buildPlaybackSource(
         bestManifest: ManifestCandidate?,
         bestProgressive: StreamCandidate?,
         bestVideo: StreamCandidate?,
         bestAudio: StreamCandidate?,
+        preferFastStart: Boolean = false,
     ): TrailerPlaybackSource? = withContext(Dispatchers.Default) {
-        // PREFER the muxed HLS manifest (m3u8) whenever it exists. It's a single
-        // self-contained stream (AAC audio muxed in, multi-bitrate so AVPlayer
-        // auto-picks quality) driven by ONE AVPlayer / ONE layer. That makes it far
-        // more reliable than the split-stream path below: with split streams we run
-        // two AVPlayers and two readiness signals, and in practice the audio player
-        // starts while the separate video layer never reaches isReadyForDisplay —
-        // which is exactly the "audio over poster then timeout" failure. Trading the
-        // occasional codec-perfect split stream for single-player reliability gets us
-        // far closer to "9/10 trailers play".
-        val manifestUrl = bestManifest?.manifestUrl
-        if (manifestUrl != null) {
-            return@withContext TrailerPlaybackSource(
-                videoUrl = resolveReachableUrl(manifestUrl),
-                audioUrl = null, // HLS carries audio in-band
-            )
+        // Mirror upstream Android logic: prefer the adaptive split-stream (bestVideo +
+        // bestAudio) over an HLS manifest. The android_vr client (PREFERRED_SEPARATE_CLIENT)
+        // returns H.264/mp4 video and AAC/m4a audio — both decodable by AVFoundation.
+        // HLS is kept as a fallback when no adaptive video is available.
+        val bestManifestHeight = bestManifest?.height ?: -1
+        val bestCombinedIsManifest = bestManifest != null &&
+            (bestProgressive == null || bestManifestHeight > bestProgressive.height)
+
+        val combinedUrl = if (bestCombinedIsManifest) {
+            bestManifest.manifestUrl
+        } else {
+            bestProgressive?.url
         }
 
-        // No HLS manifest. iOS AVFoundation can decode AAC (m4a) but NOT Opus (webm),
-        // so the split-stream dual-player path is only usable when the audio is AAC.
-        val iosCompatibleAudio = bestAudio?.takeIf { it.ext.equals("m4a", ignoreCase = true) }
-        val iosCompatibleVideo = bestVideo?.takeIf { it.ext.equals("mp4", ignoreCase = true) }
-
-        if (iosCompatibleAudio != null && iosCompatibleVideo != null) {
-            val videoUrl = resolveReachableUrl(iosCompatibleVideo.url)
-            val audioUrl = resolveReachableUrl(iosCompatibleAudio.url)
-            return@withContext TrailerPlaybackSource(videoUrl = videoUrl, audioUrl = audioUrl)
+        if (preferFastStart) {
+            // Home hero slide 0: fastest possible startup. Use the 360p muxed progressive
+            // MP4 — single AVPlayer, audio in-band, small file, reliably ready in 1-2s.
+            val progressiveUrl = bestProgressive?.url ?: combinedUrl
+            if (progressiveUrl != null) {
+                return@withContext TrailerPlaybackSource(
+                    videoUrl = resolveReachableUrl(progressiveUrl),
+                    audioUrl = null,
+                )
+            }
         }
 
-        // Next: progressive muxed MP4 (capped at 720p but self-contained + reliable).
-        val combinedUrl = bestProgressive?.url
+        // Quality path: adaptive split-stream gives 720p/1080p H.264 + AAC.
+        // Probe both URLs in parallel so the 2s CDN probe budget is shared rather
+        // than paid twice sequentially — cuts loading time roughly in half.
+        val videoBaseUrl = bestVideo?.url ?: combinedUrl ?: return@withContext null
+        val audioBaseUrl = bestAudio?.url
 
-        // Last resort: a video-only stream (silent trailer) if nothing else exists.
-        val finalVideoUrl = resolveReachableUrl(
-            combinedUrl ?: iosCompatibleVideo?.url ?: bestVideo?.url ?: return@withContext null
-        )
+        val (videoUrl, audioUrl) = coroutineScope {
+            val videoJob = async { resolveReachableUrl(videoBaseUrl) }
+            val audioJob = audioBaseUrl?.let { url -> async { resolveReachableUrl(url) } }
+            videoJob.await() to audioJob?.await()
+        }
 
         TrailerPlaybackSource(
-            videoUrl = finalVideoUrl,
-            audioUrl = null, // muxed stream has audio in-band; or genuinely no audio available
+            videoUrl = videoUrl,
+            audioUrl = audioUrl,
         )
     }
 

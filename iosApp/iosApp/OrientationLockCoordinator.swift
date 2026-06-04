@@ -98,7 +98,13 @@ final class OrientationLockCoordinator {
         )
         observers.append(
             center.addObserver(forName: unlockPlayerOrientationNotification, object: nil, queue: .main) { [weak self] _ in
-                self?.setLandscapeLock(enabled: false)
+                // Delay the unlock so the player's 220ms pop-exit fade completes before
+                // the device rotates back to portrait. Without this, the detail screen
+                // briefly receives landscape constraints (wide maxWidth → isTablet=true →
+                // small hero formula) while the player is still fading out.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                    self?.setLandscapeLock(enabled: false)
+                }
             }
         )
     }

@@ -28,33 +28,51 @@ object HeroTrailerSourceCache {
      * via the platform extractor and caches the result. Null results are also
      * cached — a video that failed to resolve once will fail the same way again
      * within the session, and we'd rather not pay the cost a second time.
+     *
+     * [preferFastStart] selects a 360p muxed MP4 (single AVPlayer, audio in-band)
+     * over the higher-quality adaptive split-stream path. Use this for the first
+     * hero slide where startup latency matters more than resolution. Results are
+     * cached under a separate key so a later quality resolution for the same video
+     * is not affected.
      */
-    suspend fun resolve(youtubeKey: String): TrailerPlaybackSource? {
-        // Fast path — already cached
-        cache[youtubeKey]?.let { return it }
-        if (cache.containsKey(youtubeKey)) return null
+    suspend fun resolve(youtubeKey: String, preferFastStart: Boolean = false): TrailerPlaybackSource? {
+        // Fast-start and quality paths are cached independently so the first slide's
+        // 360p result doesn't clobber a later quality resolution for the same key.
+        val cacheKey = if (preferFastStart) "${youtubeKey}@fast" else youtubeKey
+
+        cache[cacheKey]?.let { return it }
+        if (cache.containsKey(cacheKey)) return null
 
         // De-duplicate concurrent in-flight requests for the same key
         val lock = mapLock.withLock {
-            inflight.getOrPut(youtubeKey) { Mutex() }
+            inflight.getOrPut(cacheKey) { Mutex() }
         }
         return lock.withLock {
-            // Re-check inside the lock — another caller may have populated the cache
-            // while we were waiting.
-            if (cache.containsKey(youtubeKey)) {
-                inflight.remove(youtubeKey)
-                return@withLock cache[youtubeKey]
+            if (cache.containsKey(cacheKey)) {
+                inflight.remove(cacheKey)
+                return@withLock cache[cacheKey]
             }
             val source = runCatching {
                 TrailerPlaybackResolver.resolveFromYouTubeUrl(
-                    "https://www.youtube.com/watch?v=$youtubeKey"
+                    "https://www.youtube.com/watch?v=$youtubeKey",
+                    preferFastStart = preferFastStart,
                 )
             }.getOrNull()
-            cache[youtubeKey] = source
-            inflight.remove(youtubeKey)
+            cache[cacheKey] = source
+            inflight.remove(cacheKey)
             source
         }
     }
+
+    /**
+     * Returns the quality-path (non-fast-start) cached source for [youtubeKey] if it
+     * has already been resolved — without triggering a new extraction. Returns null if
+     * not yet cached or if the previous resolution failed.
+     *
+     * Used by the detail screen to prefer a pre-warmed quality source over the 360p
+     * fast-start fallback when one is already available from home screen pre-warming.
+     */
+    fun getCachedOrNull(youtubeKey: String): TrailerPlaybackSource? = cache[youtubeKey]
 
     /**
      * Tries each YouTube key in [keys] in order, returning the first one that
@@ -63,10 +81,10 @@ object HeroTrailerSourceCache {
      * primary fails (geo-block, age-gate, signature cipher), we fall through to
      * a backup automatically.
      */
-    suspend fun resolveFirstAvailable(keys: List<String>): TrailerPlaybackSource? {
+    suspend fun resolveFirstAvailable(keys: List<String>, preferFastStart: Boolean = false): TrailerPlaybackSource? {
         for (key in keys) {
             if (key.isBlank()) continue
-            val source = resolve(key)
+            val source = resolve(key, preferFastStart = preferFastStart)
             if (source != null) return source
         }
         return null

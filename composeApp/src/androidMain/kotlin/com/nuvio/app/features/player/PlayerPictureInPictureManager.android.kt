@@ -9,6 +9,9 @@ import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.unit.IntSize
 import androidx.lifecycle.Lifecycle
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 internal object PlayerPictureInPictureManager {
     private data class SessionState(
@@ -22,6 +25,9 @@ internal object PlayerPictureInPictureManager {
     private var wasInPictureInPictureMode = false
     private var pendingPictureInPictureExitCheck: Runnable? = null
     private var pausePlaybackCallback: (() -> Unit)? = null
+
+    private val _isInPipMode = MutableStateFlow(false)
+    val isInPipMode: StateFlow<Boolean> = _isInPipMode.asStateFlow()
 
     fun updateSession(
         activity: Activity,
@@ -51,6 +57,14 @@ internal object PlayerPictureInPictureManager {
         }
     }
 
+    fun enterNow(activity: Activity): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        if (!sessionState.isActive) return false
+        if (activity.isFinishing) return false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && activity.isInPictureInPictureMode) return false
+        return activity.enterPictureInPictureMode(buildParams())
+    }
+
     fun onUserLeaveHint(activity: Activity): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             return false
@@ -66,6 +80,7 @@ internal object PlayerPictureInPictureManager {
 
         val wasInPictureInPicture = wasInPictureInPictureMode
         wasInPictureInPictureMode = isInPictureInPictureMode
+        _isInPipMode.value = isInPictureInPictureMode
         clearPendingPictureInPictureExitCheck()
 
         if (!wasInPictureInPicture || isInPictureInPictureMode) return

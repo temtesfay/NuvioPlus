@@ -334,8 +334,8 @@ private fun catalogLogoOverlaySize(
 
 private fun NuvioPosterShape.cardWidth(basePosterWidthDp: Int): Dp =
     when (this) {
-        NuvioPosterShape.Poster -> basePosterWidthDp.dp
-        NuvioPosterShape.Square -> basePosterWidthDp.dp
+        NuvioPosterShape.Poster -> portraitPosterWidth(basePosterWidthDp)
+        NuvioPosterShape.Square -> portraitPosterWidth(basePosterWidthDp)
         NuvioPosterShape.Landscape -> landscapePosterWidth(basePosterWidthDp)
     }
 

@@ -624,7 +624,11 @@ final class RootComposeViewController: UIViewController, UITabBarDelegate {
 
         guard let urlString, let url = URL(string: urlString) else { return }
 
-        profileAvatarImageTask = URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+        // Use cached data on first return so the avatar appears instantly on
+        // subsequent launches (NSURLCache has a disk copy from the last fetch).
+        // The load-from-network fallback keeps it up to date when the cache misses.
+        let avatarRequest = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 30)
+        profileAvatarImageTask = URLSession.shared.dataTask(with: avatarRequest) { [weak self] data, _, _ in
             guard
                 let self,
                 let data,
@@ -719,12 +723,11 @@ struct ContentView: View {
     fileprivate static func patchScrollViews(in view: UIView) {
         if let scrollView = view as? UIScrollView {
             scrollView.panGestureRecognizer.allowedScrollTypesMask = [.continuous, .discrete]
-            // Slightly higher deceleration rate than the default (.normal = 0.998)
-            // gives more scroll momentum on trackpad, reducing the "stops too quickly"
-            // feeling on the home page and other tall LazyColumn screens.
-            if scrollView.decelerationRate.rawValue < 0.9985 {
-                scrollView.decelerationRate = UIScrollView.DecelerationRate(rawValue: 0.9985)
-            }
+            // Higher deceleration rate than the default (.normal = 0.998) gives more
+            // scroll momentum on trackpad so the home page and catalog rows coast
+            // further — closer to native macOS list feel. Always overwrite so the
+            // value stays consistent after Compose recycles its scroll containers.
+            scrollView.decelerationRate = UIScrollView.DecelerationRate(rawValue: 0.9992)
         }
         // Patch standalone pan gesture recognizers too (Compose uses these for custom
         // scroll containers that don't subclass UIScrollView).
