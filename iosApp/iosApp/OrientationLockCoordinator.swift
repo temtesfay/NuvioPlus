@@ -14,22 +14,26 @@ final class OrientationLockAppDelegate: NSObject, UIApplicationDelegate, UNUserN
         OrientationLockCoordinator.shared.start()
         DownloadsLiveActivityManager.shared.start()
         UNUserNotificationCenter.current().delegate = self
-        #if targetEnvironment(macCatalyst)
-        // Activate AVAudioSession before any player code runs so that the
-        // audiounit backend gets a valid channel count from the session when
-        // it initializes (rather than 0, which caused an indefinite hang).
-        // This must happen on the main thread early in the app lifecycle —
-        // doing it in viewDidLoad was too late and risked a race with the
-        // audiounit init thread.
+        // Configure AVAudioSession before any player code runs.
+        // Mac Catalyst: must also be *activated* (not just configured) before MPV's
+        //   audiounit backend initialises — it queries outputNumberOfChannels on a
+        //   background thread, and gets 0 (indefinite hang) if the session is inactive.
+        // iOS: configure the category so MPV's audiounit backend and background audio
+        //   both inherit the right session without additional setup. setActive(true)
+        //   is deferred to the first actual playback on iOS to avoid stealing the
+        //   audio route from other apps at launch.
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .moviePlayback)
+            try session.setCategory(.playback, mode: .moviePlayback, options: [])
+            #if targetEnvironment(macCatalyst)
             try session.setActive(true)
             print("[Audio] Mac Catalyst audio session ready: \(session.outputNumberOfChannels)ch @ \(session.sampleRate) Hz")
+            #else
+            print("[Audio] iOS audio session category configured (.playback) for background audio")
+            #endif
         } catch {
-            print("[Audio] Mac Catalyst audio session setup failed: \(error)")
+            print("[Audio] Audio session setup failed: \(error)")
         }
-        #endif
         return true
     }
 

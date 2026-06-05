@@ -23,6 +23,8 @@ import com.nuvio.app.features.trailer.TrailerPreBufferService
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -433,11 +435,21 @@ object HomeRepository {
         // Pre-warm slides 1-7 in the stable Repository scope (slide 0 was already
         // started above the moment its keys were resolved). Each item runs in parallel;
         // within each item keys are tried in order and we stop at the first working URL.
+        // Limit concurrent pre-warming to 2 slides at a time. Running all 7 in
+        // parallel floods resolveReachableUrl's CDN probes (2s timeout each) with
+        // too many simultaneous HTTP requests, which causes network congestion and
+        // timeouts for some trailers. 2-wide gives good throughput with manageable
+        // pressure on the CDN probe step.
+        val prewarmSemaphore = Semaphore(2)
         heroTrailerPreWarmJob?.cancel()
         heroTrailerPreWarmJob = scope.launch {
             coroutineScope {
                 enriched.drop(1).mapIndexed { i, item ->
-                    async { prewarmSingleSlide(item, slideIndex = i + 1) }
+                    async {
+                        prewarmSemaphore.withPermit {
+                            prewarmSingleSlide(item, slideIndex = i + 1)
+                        }
+                    }
                 }.awaitAll()
             }
             println("🟢 (HeroTrailer) Pre-warm complete for all ${enriched.size} hero items")

@@ -629,6 +629,10 @@ final class MPVPlayerViewController: UIViewController {
     private lazy var eventQueue = DispatchQueue(label: "mpv-events", qos: .userInitiated)
     private var recentPlaybackLogs: [String] = []
     private var activeRequestHeaders: [String: String] = [:]
+    // Screen sleep prevention — held while a file is actively loading / playing.
+    // Mac Catalyst: NSProcessInfo activity token (.idleDisplaySleepDisabled).
+    // iOS: managed via UIApplication.isIdleTimerDisabled instead (no token needed).
+    private var sleepPreventionToken: NSObjectProtocol?
 
     // Cached track lists
     var audioTracks: [TrackInfo] = []
@@ -961,7 +965,10 @@ final class MPVPlayerViewController: UIViewController {
 
     @objc private func enterBackground() {
         guard mpv != nil else { return }
-        pausePlayback()
+        // Disable video rendering to save GPU/CPU in the background, but leave
+        // audio running. Info.plist declares UIBackgroundModes=audio, so iOS/macOS
+        // keeps the process alive; the .playback AVAudioSession category (configured
+        // at launch) maintains the audio hardware route.
         setStringProperty("vid", "no")
     }
 
@@ -969,6 +976,41 @@ final class MPVPlayerViewController: UIViewController {
         guard mpv != nil else { return }
         setStringProperty("vid", "auto")
         playPlayback()
+    }
+
+    // MARK: - Screen sleep prevention
+
+    /// Prevent the display from sleeping while video is loading/playing.
+    /// Call when a file starts loading; pair with disableSleepPrevention() on destroy.
+    private func enableSleepPrevention() {
+        #if targetEnvironment(macCatalyst)
+        // NSProcessInfo activity is the correct Mac Catalyst API — it talks directly
+        // to the power management layer and works regardless of the window state.
+        guard sleepPreventionToken == nil else { return }
+        sleepPreventionToken = ProcessInfo.processInfo.beginActivity(
+            options: .idleDisplaySleepDisabled,
+            reason: "Nuvio video playback"
+        )
+        #else
+        // isIdleTimerDisabled must be set on the main thread.
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = true
+        }
+        #endif
+    }
+
+    /// Re-allow display sleep after playback ends or the player is destroyed.
+    private func disableSleepPrevention() {
+        #if targetEnvironment(macCatalyst)
+        if let token = sleepPreventionToken {
+            ProcessInfo.processInfo.endActivity(token)
+            sleepPreventionToken = nil
+        }
+        #else
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = false
+        }
+        #endif
     }
 
     // MARK: - Playback API
@@ -1014,6 +1056,7 @@ final class MPVPlayerViewController: UIViewController {
         guard mpv != nil else { return }
         layoutMetalLayer()
         clearPlaybackError()
+        enableSleepPrevention()
         let sanitizedHeaders = sanitizeRequestHeaders(request.requestHeaders)
         activeRequestHeaders = sanitizedHeaders
         applyRequestHeaders(sanitizedHeaders)
@@ -1545,6 +1588,7 @@ final class MPVPlayerViewController: UIViewController {
     }
 
     func destroyPlayer() {
+        disableSleepPrevention()
         #if targetEnvironment(macCatalyst)
         teardownCursorTracking()
         #endif

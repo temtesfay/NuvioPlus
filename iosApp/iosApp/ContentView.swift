@@ -723,11 +723,10 @@ struct ContentView: View {
     fileprivate static func patchScrollViews(in view: UIView) {
         if let scrollView = view as? UIScrollView {
             scrollView.panGestureRecognizer.allowedScrollTypesMask = [.continuous, .discrete]
-            // Higher deceleration rate than the default (.normal = 0.998) gives more
-            // scroll momentum on trackpad so the home page and catalog rows coast
-            // further — closer to native macOS list feel. Always overwrite so the
-            // value stays consistent after Compose recycles its scroll containers.
-            scrollView.decelerationRate = UIScrollView.DecelerationRate(rawValue: 0.9)
+            // 0.9992 is slightly above UIKit's .normal (0.998) — lists coast further
+            // after a trackpad swipe, matching native macOS feel. Always overwrite:
+            // Compose can reset the rate when it recycles its scroll containers.
+            scrollView.decelerationRate = UIScrollView.DecelerationRate(rawValue: 0.9992)
         }
         // Patch standalone pan gesture recognizers too (Compose uses these for custom
         // scroll containers that don't subclass UIScrollView).

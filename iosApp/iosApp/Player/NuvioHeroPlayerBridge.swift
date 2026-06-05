@@ -51,9 +51,18 @@ final class HeroTrailerPreBufferCache {
     /// Create a new AVPlayerItem from the cached asset for [url], or nil if not cached.
     /// Does NOT remove the asset — the same asset can serve multiple bridge instances so
     /// swiping back to a slide is just as fast as the first visit.
+    ///
+    /// Exception: if AVFoundation already evaluated the asset's "playable" key and the
+    /// result is `.failed` (e.g. CDN server unreachable during parallel pre-warming),
+    /// the stale asset is evicted so the bridge can create a fresh one and retry.
     func makeItem(url urlString: String) -> AVPlayerItem? {
         // Already on main thread (called from bridge init during Compose recomposition).
         guard let asset = assets[urlString] else { return nil }
+        if asset.statusOfValue(forKey: "playable", error: nil) == .failed {
+            assets.removeValue(forKey: urlString)
+            loaders.removeValue(forKey: urlString)
+            return nil
+        }
         return AVPlayerItem(asset: asset)
     }
 
