@@ -180,8 +180,9 @@ internal object TrailerExtractionPlatform {
         }.getOrDefault(false)
     }
 
-    // Android's ExoPlayer supports WebM/Opus natively — no filtering needed.
+    // Android's ExoPlayer supports WebM/Opus and VP9/AV1 natively — no filtering needed.
     fun filterAudioCandidates(candidates: List<StreamCandidate>): List<StreamCandidate> = candidates
+    fun filterVideoCandidates(candidates: List<StreamCandidate>): List<StreamCandidate> = candidates
 
     private fun buildHeaders(source: Map<String, String>): Headers {
         val headers = Headers.Builder()

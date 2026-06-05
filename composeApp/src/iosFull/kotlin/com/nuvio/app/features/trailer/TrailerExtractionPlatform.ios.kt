@@ -81,6 +81,16 @@ internal object TrailerExtractionPlatform {
         return m4aCandidates.ifEmpty { candidates }
     }
 
+    // AVFoundation only decodes H.264/H.265 (MP4/M4V) — it cannot handle
+    // WebM/VP9/AV1. The android_vr YouTube client often returns WebM as its
+    // highest-quality adaptive video stream, which causes immediate AVPlayerItem
+    // failure (Bridge failed after 100ms). Filter to MP4 so AVFoundation always
+    // gets a decodable codec. Falls back to all candidates if no MP4 is available.
+    fun filterVideoCandidates(candidates: List<StreamCandidate>): List<StreamCandidate> {
+        val mp4Candidates = candidates.filter { it.ext == "mp4" }
+        return mp4Candidates.ifEmpty { candidates }
+    }
+
     suspend fun buildPlaybackSource(
         bestManifest: ManifestCandidate?,
         bestProgressive: StreamCandidate?,

@@ -298,10 +298,11 @@ class InAppYouTubeExtractor {
         }
 
         val bestProgressive = sortCandidates(progressive).firstOrNull()
-        val bestVideo = pickBestForClient(adaptiveVideo, PREFERRED_SEPARATE_CLIENT)
-        // Let the platform filter the audio candidates before selection so each
-        // platform can enforce codec compatibility (e.g. iOS needs M4A/AAC because
-        // AVFoundation cannot decode WebM/Opus, while Android handles any format).
+        // Let the platform filter candidates before selection so each platform can
+        // enforce codec compatibility. iOS AVFoundation only decodes H.264 (MP4) video
+        // and AAC/M4A audio; Android ExoPlayer accepts all codecs including VP9/AV1/Opus.
+        val platformVideo = TrailerExtractionPlatform.filterVideoCandidates(adaptiveVideo)
+        val bestVideo = pickBestForClient(platformVideo, PREFERRED_SEPARATE_CLIENT)
         val platformAudio = TrailerExtractionPlatform.filterAudioCandidates(adaptiveAudio)
         val bestAudio = pickBestForClient(platformAudio, PREFERRED_SEPARATE_CLIENT)
 
