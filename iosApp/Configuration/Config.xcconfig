@@ -4,3 +4,9 @@ TEAM_ID=
 
 PRODUCT_NAME=Nuvio
 PRODUCT_BUNDLE_IDENTIFIER=com.temtesfay.nuvio
+
+// Xcode 26 beta SDK bug: MacOSX26.x.sdk/System/Library/Frameworks/AVKit.framework/Headers/AVKit.h
+// includes AVInputPickerInteraction.h which is missing from the macOS SDK root but present in
+// iOSSupport. Adding iOSSupport to FRAMEWORK_SEARCH_PATHS makes it a -F path, which is searched
+// before the system AVKit, so the include resolves correctly for Mac Catalyst builds.
+FRAMEWORK_SEARCH_PATHS[sdk=macosx*] = $(inherited) $(SDKROOT)/System/iOSSupport/System/Library/Frameworks $(SDKROOT)/System/iOSSupport/System/Library/SubFrameworks

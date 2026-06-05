@@ -93,6 +93,7 @@ import com.nuvio.app.features.trakt.TraktListTab
 import com.nuvio.app.features.trailer.HeroTrailerSourceCache
 import com.nuvio.app.features.trailer.TrailerPlaybackResolver
 import com.nuvio.app.features.trailer.TrailerPlaybackSource
+import com.nuvio.app.features.trailer.TrailerPreBufferService
 import com.nuvio.app.features.watched.WatchedRepository
 import com.nuvio.app.features.watched.previousReleasedEpisodesBefore
 import com.nuvio.app.features.watched.releasedPlayableEpisodes
@@ -487,7 +488,29 @@ fun MetaDetailsScreen(
                     if (resolvedSource == null) {
                         heroTrailerFinished = true
                     } else {
+                        // Kick off HLS manifest pre-buffering so the AVFoundation bridge
+                        // can create a warm AVPlayerItem instead of fetching the manifest
+                        // cold — cuts the remaining startup delay from ~3s to ~1s.
+                        TrailerPreBufferService.prefetch(
+                            videoUrl = resolvedSource.videoUrl,
+                            audioUrl = resolvedSource.audioUrl,
+                        )
                         heroTrailerPlaybackSource = resolvedSource
+                    }
+                }
+                // Pre-extract the first few trailer URLs in the background so the
+                // popup loads instantly on iOS (cache hit) rather than running the
+                // full 2-4s extraction after the tap.
+                LaunchedEffect(meta.id, inAppTrailerPlaybackEnabled) {
+                    if (!inAppTrailerPlaybackEnabled) return@LaunchedEffect
+                    val topTrailers = meta.trailers
+                        .asSequence()
+                        .filter { it.site.equals("YouTube", ignoreCase = true) && it.key.isNotBlank() }
+                        .take(3)
+                        .toList()
+                    if (topTrailers.isEmpty()) return@LaunchedEffect
+                    topTrailers.forEach { trailer ->
+                        launch { HeroTrailerSourceCache.resolve(trailer.key) }
                     }
                 }
                 val onBackFromDetails: () -> Unit = {
@@ -510,7 +533,10 @@ fun MetaDetailsScreen(
                             val currentRequestToken = trailerRequestToken
                             trailerScope.launch {
                                 val resolvedSource = runCatching {
-                                    TrailerPlaybackResolver.resolveFromYouTubeUrl(youtubeUrl)
+                                    // Check the session cache first — if the home screen or the
+                                    // details hero already resolved this video ID, it's instant.
+                                    HeroTrailerSourceCache.getCachedOrNull(trailer.key)
+                                        ?: HeroTrailerSourceCache.resolve(trailer.key)
                                 }.getOrNull()
                                 if (currentRequestToken != trailerRequestToken) {
                                     return@launch

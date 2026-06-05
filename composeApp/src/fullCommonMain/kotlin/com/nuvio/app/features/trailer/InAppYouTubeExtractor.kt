@@ -326,6 +326,7 @@ class InAppYouTubeExtractor {
         val streamType = when {
             source == null -> "none — no playable source"
             source.audioUrl != null -> "adaptive split-stream video=${bestVideo?.ext}/${bestVideo?.height}p audio=${bestAudio?.ext} client=${bestVideo?.client}"
+            preferFastStart && bestProgressive != null -> "progressive muxed (fast-start) ${bestProgressive.ext} ${bestProgressive.height}p client=${bestProgressive.client}"
             bestVideo != null -> "adaptive video-only ${bestVideo.ext}/${bestVideo.height}p client=${bestVideo.client}"
             bestManifest != null -> "HLS fallback ${bestManifest.height}p client=${bestManifest.client}"
             bestProgressive != null -> "progressive muxed ${bestProgressive.ext} ${bestProgressive.height}p client=${bestProgressive.client}"

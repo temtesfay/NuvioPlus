@@ -278,6 +278,10 @@ fun HomeHeroSection(
                         onError = {
                             trailerReady = false
                             coroutineScope.launch {
+                                // Wait before advancing so a failing trailer still shows
+                                // the poster for a readable duration instead of skipping
+                                // in ~500 ms (5 polling ticks × 100 ms).
+                                delay(5_000L)
                                 if (items.size > 1 && pagerState.settledPage == pageWhenStarted) {
                                     pagerState.animateScrollToPage((pageWhenStarted + 1) % items.size)
                                 }
@@ -512,6 +516,10 @@ private fun HeroContentBlock(
 ) {
     val titleHoverSource = remember { MutableInteractionSource() }
     val isTitleHovered by titleHoverSource.collectIsHoveredAsState()
+    // Once shown, keep showing — don't hide when cursor leaves.
+    // Reset when the item changes (slide change).
+    var descriptionShown by remember(item) { mutableStateOf(false) }
+    if (isTitleHovered) descriptionShown = true
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -549,9 +557,9 @@ private fun HeroContentBlock(
             )
         }
 
-        // Description shown on hover (desktop / Mac Catalyst)
+        // Description shown on hover (desktop / Mac Catalyst) and stays visible after cursor leaves.
         AnimatedVisibility(
-            visible = isTitleHovered && !item.description.isNullOrBlank(),
+            visible = descriptionShown && !item.description.isNullOrBlank(),
             enter = fadeIn(),
             exit = fadeOut(),
         ) {

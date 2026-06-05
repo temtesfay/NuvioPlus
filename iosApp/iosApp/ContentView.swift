@@ -727,7 +727,7 @@ struct ContentView: View {
             // scroll momentum on trackpad so the home page and catalog rows coast
             // further — closer to native macOS list feel. Always overwrite so the
             // value stays consistent after Compose recycles its scroll containers.
-            scrollView.decelerationRate = UIScrollView.DecelerationRate(rawValue: 0.9992)
+            scrollView.decelerationRate = UIScrollView.DecelerationRate(rawValue: 0.9)
         }
         // Patch standalone pan gesture recognizers too (Compose uses these for custom
         // scroll containers that don't subclass UIScrollView).

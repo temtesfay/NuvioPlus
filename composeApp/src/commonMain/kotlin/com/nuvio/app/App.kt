@@ -1,5 +1,6 @@
 package com.nuvio.app
 
+import co.touchlab.kermit.Logger
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
@@ -2009,11 +2010,15 @@ private fun MainAppContent(
                             if (resolvingDebridStream) return
                             streamRouteScope.launch {
                                 resolvingDebridStream = true
+                                val debridStart = com.nuvio.app.features.streams.epochMs()
+                                Logger.d("StreamLaunch") { "debrid resolve START — ${stream.addonName.orEmpty()} / ${stream.sourceName.orEmpty()}" }
                                 val resolved = DirectDebridPlaybackResolver.resolveToPlayableStream(
                                     stream = stream,
                                     season = launch.seasonNumber,
                                     episode = launch.episodeNumber,
                                 )
+                                val debridMs = com.nuvio.app.features.streams.epochMs() - debridStart
+                                Logger.d("StreamLaunch") { "debrid resolve END — ${debridMs}ms — result=${resolved::class.simpleName}" }
                                 resolvingDebridStream = false
                                 when (resolved) {
                                     is DirectDebridPlayableResult.Success -> openSelectedStream(
@@ -2052,6 +2057,7 @@ private fun MainAppContent(
                             return
                         }
                         val sourceUrl = stream.playableDirectUrl ?: return
+                        Logger.d("StreamLaunch") { "opening player → ${sourceUrl.take(120)}" }
                         if (playerSettings.streamReuseLastLinkEnabled) {
                             val cacheKey = StreamLinkCacheRepository.contentKey(
                                 type = launch.type,

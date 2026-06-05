@@ -467,25 +467,15 @@ object HomeRepository {
             addAll(item.alternateTrailerKeys.take(4).filter { it.isNotBlank() })
         }
         if (candidateKeys.isEmpty()) return
-        // Slide 0 gets a 360p muxed MP4 (single AVPlayer, fast startup).
-        // All other slides use the quality adaptive split-stream path.
-        val preferFastStart = slideIndex == 0
         val source = runCatching {
-            HeroTrailerSourceCache.resolveFirstAvailable(candidateKeys, preferFastStart = preferFastStart)
+            HeroTrailerSourceCache.resolveFirstAvailable(candidateKeys, preferFastStart = false)
         }.getOrNull()
         if (source != null) {
             _trailerSources.update { it + (stableKey to source) }
-            println("🟢 (HeroTrailer) Pre-warm resolved ${item.name} (slide=$slideIndex fast=$preferFastStart) → ${source.videoUrl.take(60)}…")
+            println("🟢 (HeroTrailer) Pre-warm resolved ${item.name} (slide=$slideIndex) → ${source.videoUrl.take(60)}…")
             TrailerPreBufferService.prefetch(source.videoUrl, source.audioUrl)
         } else {
             println("🟡 (HeroTrailer) Pre-warm: no playable source for ${item.name}")
-        }
-        // Slide 0 was pre-warmed at 360p for fast home-screen startup. Also warm the
-        // quality path so the detail screen gets full resolution without re-extracting.
-        if (slideIndex == 0 && source != null) {
-            runCatching {
-                HeroTrailerSourceCache.resolveFirstAvailable(candidateKeys, preferFastStart = false)
-            }
         }
     }
 

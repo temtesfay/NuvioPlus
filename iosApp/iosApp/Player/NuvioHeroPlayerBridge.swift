@@ -17,35 +17,52 @@ import UIKit
 final class HeroTrailerPreBufferCache {
     static let shared = HeroTrailerPreBufferCache()
     private var assets: [String: AVURLAsset] = [:]
+    // Strong references to chunked loaders — AVURLAsset holds only a weak reference
+    // to its resource loader delegate. Without this the loader is released immediately
+    // and AVFoundation falls back to direct (throttled) fetching.
+    private var loaders: [String: YouTubeChunkedResourceLoader] = [:]
     private init() {}
 
-    /// Create (and start pre-loading) an AVURLAsset for [videoUrl].
-    /// Safe to call multiple times with the same URL — subsequent calls are no-ops.
-    func prefetch(videoUrl: String) {
+    /// Create (and start pre-loading) an AVURLAsset for [url].
+    /// For YouTube CDN URLs (googlevideo.com) the asset is backed by a chunked loader
+    /// that bypasses server-side throttling. Safe to call multiple times — no-op if cached.
+    func prefetch(url urlString: String) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            guard self.assets[videoUrl] == nil, let url = URL(string: videoUrl) else { return }
-            let asset = AVURLAsset(url: url)
-            self.assets[videoUrl] = asset
-            // Kick off the HLS manifest fetch. AVFoundation downloads and parses the
-            // .m3u8 asynchronously; by the time the bridge is created the manifest is
-            // ready and AVPlayer can jump straight to buffering the first segment.
+            guard self.assets[urlString] == nil else { return }
+
+            let asset: AVURLAsset
+            if let (chunkedAsset, loader) = YouTubeChunkedResourceLoader.makeAsset(for: urlString) {
+                asset = chunkedAsset
+                self.loaders[urlString] = loader
+            } else {
+                guard let url = URL(string: urlString) else { return }
+                asset = AVURLAsset(url: url)
+            }
+            self.assets[urlString] = asset
+            // Kick off the network probe. For HLS this downloads the .m3u8 manifest;
+            // for chunked YouTube URLs the resource loader fires a Range: bytes=0-1 request
+            // to resolve MIME type and content length. Both happen before the bridge is
+            // created so AVPlayer can jump straight to buffering the first segment.
             asset.loadValuesAsynchronously(forKeys: ["playable"]) { }
         }
     }
 
-    /// Create a new AVPlayerItem from the cached asset for [videoUrl], or nil if not cached.
+    /// Create a new AVPlayerItem from the cached asset for [url], or nil if not cached.
     /// Does NOT remove the asset — the same asset can serve multiple bridge instances so
     /// swiping back to a slide is just as fast as the first visit.
-    func makeItem(videoUrl: String) -> AVPlayerItem? {
+    func makeItem(url urlString: String) -> AVPlayerItem? {
         // Already on main thread (called from bridge init during Compose recomposition).
-        guard let asset = assets[videoUrl] else { return nil }
+        guard let asset = assets[urlString] else { return nil }
         return AVPlayerItem(asset: asset)
     }
 
     /// Clear all cached assets (e.g. on logout / session reset).
     func clearAll() {
-        DispatchQueue.main.async { self.assets.removeAll() }
+        DispatchQueue.main.async {
+            self.assets.removeAll()
+            self.loaders.removeAll()
+        }
     }
 }
 
@@ -55,9 +72,13 @@ final class HeroTrailerPreBufferCache {
 /// is resolved in the pre-warm. This bridges into [HeroTrailerPreBufferCache].
 final class NuvioTrailerPreBufferProvider: TrailerPreBufferProvider {
     func prefetch(videoUrl: String, audioUrl: String?) {
-        // audioUrl is non-nil only for the rare split-stream DASH path; the muxed
-        // HLS path (default) has audioUrl=nil and only needs the video URL buffered.
-        HeroTrailerPreBufferCache.shared.prefetch(videoUrl: videoUrl)
+        HeroTrailerPreBufferCache.shared.prefetch(url: videoUrl)
+        // Pre-buffer the audio stream too. For split-stream slides the audio player
+        // always started cold (manifest download blocked readyToPlay by 1-3 s). Now
+        // both AVURLAssets load their manifests in parallel during the pre-warm.
+        if let audioUrl = audioUrl {
+            HeroTrailerPreBufferCache.shared.prefetch(url: audioUrl)
+        }
     }
 }
 
@@ -127,6 +148,9 @@ final class NuvioHeroPlayerBridgeImpl: HeroPlayerBridge {
     /// Latest mute preference. Applied in markReady() so audio never plays before
     /// the first video frame is visible.
     private var desiredMute: Bool = true
+    // Strong references to chunked loaders for any assets created outside the
+    // pre-buffer cache (cache miss on first launch). AVURLAsset holds the delegate weakly.
+    private var chunkedLoaders: [YouTubeChunkedResourceLoader] = []
 
     private var _ready = false
     private var _failed = false
@@ -145,23 +169,49 @@ final class NuvioHeroPlayerBridgeImpl: HeroPlayerBridge {
             return
         }
 
-        // Use the pre-buffered asset if the pre-warm already downloaded the HLS manifest.
-        // makeItem() creates a fresh AVPlayerItem from the cached AVURLAsset — the asset
-        // is retained in cache so swiping back to this slide is equally fast next time.
-        // Falls back to a cold AVPlayerItem if the cache missed (e.g. very first launch).
-        videoItem = HeroTrailerPreBufferCache.shared.makeItem(videoUrl: videoUrl)
-                 ?? AVPlayerItem(url: vUrl)
+        // Collect loaders in a local so we don't touch `self` until all stored
+        // properties are initialized (Swift two-phase init requirement).
+        var initLoaders: [YouTubeChunkedResourceLoader] = []
+
+        // Use the pre-buffered asset if the pre-warm already ran for this URL.
+        // On a cache miss (e.g. very first launch before pre-warm finishes), create a
+        // fresh chunked asset so we still bypass YouTube CDN throttling.
+        if let cached = HeroTrailerPreBufferCache.shared.makeItem(url: videoUrl) {
+            videoItem = cached
+        } else if let (chunkedAsset, loader) = YouTubeChunkedResourceLoader.makeAsset(for: videoUrl) {
+            videoItem = AVPlayerItem(asset: chunkedAsset)
+            initLoaders.append(loader)
+        } else {
+            videoItem = AVPlayerItem(url: vUrl)
+        }
         videoPlayer = AVPlayer(playerItem: videoItem)
         // Keep muted until markReady() confirms the first frame is visible.
         // This prevents the muxed audio track from bleeding out over the poster.
         videoPlayer.isMuted = true
         videoPlayer.volume = 0
+        // Don't wait for an "optimal" network buffer before starting. For muted
+        // background trailers a brief stall is acceptable; faster first-frame
+        // matters more. Without this, AVPlayer sits buffering for 3-5s before
+        // starting, which is most of the "10s" startup the user sees.
+        videoPlayer.automaticallyWaitsToMinimizeStalling = false
 
         if let aUrlString = audioUrl, let aUrl = URL(string: aUrlString) {
-            let aItem = AVPlayerItem(url: aUrl)
+            // Same cache-first / chunked-fallback logic as video.
+            let aItem: AVPlayerItem
+            if let cached = HeroTrailerPreBufferCache.shared.makeItem(url: aUrlString) {
+                aItem = cached
+            } else if let (chunkedAsset, loader) = YouTubeChunkedResourceLoader.makeAsset(for: aUrlString) {
+                aItem = AVPlayerItem(asset: chunkedAsset)
+                initLoaders.append(loader)
+            } else {
+                aItem = AVPlayerItem(url: aUrl)
+            }
             let aPlayer = AVPlayer(playerItem: aItem)
             aPlayer.isMuted = true
             aPlayer.volume = 0
+            // Mirror the video player setting so audio doesn't stall waiting for an
+            // "optimal" buffer — both streams start rendering as fast as possible.
+            aPlayer.automaticallyWaitsToMinimizeStalling = false
             audioItem = aItem
             audioPlayer = aPlayer
         } else {
@@ -183,6 +233,9 @@ final class NuvioHeroPlayerBridgeImpl: HeroPlayerBridge {
         if audioPlayer != nil {
             startSyncTimer()
         }
+
+        // Phase 2 — all stored properties are now initialized; safe to assign to self.
+        chunkedLoaders = initLoaders
     }
 
     deinit {
@@ -280,14 +333,15 @@ final class NuvioHeroPlayerBridgeImpl: HeroPlayerBridge {
         }
 
         // Relaxed fallback: isReadyForDisplay occasionally lags behind the actual
-        // first frame on some HLS streams. If the video is undeniably playing for
-        // 5s but the display flag hasn't fired, show it anyway.
+        // first frame on some HLS streams. If the video has been advancing for
+        // 1.5s the decoder is clearly outputting frames — force ready rather than
+        // waiting the full 5s that was causing the "10 second" startup the user sees.
         if statusReady && timeAdvancing && laidOut {
             let nowMs = Date().timeIntervalSince1970 * 1000
             if timeAdvancingFirstSeenMs == 0 {
                 timeAdvancingFirstSeenMs = nowMs
-            } else if nowMs - timeAdvancingFirstSeenMs > 5_000 {
-                NSLog("NuvioHeroPlayer: isReadyForDisplay never fired after 5s — forcing ready")
+            } else if nowMs - timeAdvancingFirstSeenMs > 1_500 {
+                NSLog("NuvioHeroPlayer: isReadyForDisplay never fired after 1.5s — forcing ready")
                 markReady()
                 return true
             }

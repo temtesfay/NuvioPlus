@@ -160,8 +160,8 @@ object DirectDebridStreamPreparer {
     }
 }
 
-private const val MAX_BACKGROUND_PREPARES_PER_MINUTE = 6
-private const val MAX_BACKGROUND_PREPARES_PER_HOUR = 30
+private const val MAX_BACKGROUND_PREPARES_PER_MINUTE = 12
+private const val MAX_BACKGROUND_PREPARES_PER_HOUR = 50
 private const val BACKGROUND_PREPARES_PER_MINUTE_WINDOW_MS = 60L * 1000L
 private const val BACKGROUND_PREPARES_PER_HOUR_WINDOW_MS = 60L * 60L * 1000L
 

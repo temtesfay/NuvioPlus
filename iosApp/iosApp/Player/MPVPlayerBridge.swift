@@ -668,6 +668,7 @@ final class MPVPlayerViewController: UIViewController {
     var positionMs: Int64 = 0
     var bufferedMs: Int64 = 0
     var currentSpeed: Float = 1.0
+    var loadStartUptime: TimeInterval = 0
     var currentErrorMessage: String {
         errorStateLock.lock()
         defer { errorStateLock.unlock() }
@@ -830,6 +831,17 @@ final class MPVPlayerViewController: UIViewController {
         checkError(mpv_set_option_string(mpv, "target-colorspace-hint", "yes"), "target-colorspace-hint")
         checkError(mpv_set_option_string(mpv, "tone-mapping", "auto"), "tone-mapping")
         checkError(mpv_set_option_string(mpv, "hdr-compute-peak", "yes"), "hdr-compute-peak")
+
+        // Network: fail fast on unreachable CDN instead of stalling forever.
+        // Default is 0 (disabled) — without this, a dead server produces an
+        // eternal black/loading screen with no error or retry option.
+        checkError(mpv_set_option_string(mpv, "network-timeout", "8"), "network-timeout")
+        // Cache: 64 MiB forward / 32 MiB back gives enough runway for 1080p without
+        // OOM pressure on iPhone. cache-pause-wait=0.5 halves the default 1 s stall
+        // before mpv resumes after a buffer underrun.
+        checkError(mpv_set_option_string(mpv, "demuxer-max-bytes", "64MiB"), "demuxer-max-bytes")
+        checkError(mpv_set_option_string(mpv, "demuxer-max-back-bytes", "32MiB"), "demuxer-max-back-bytes")
+        checkError(mpv_set_option_string(mpv, "cache-pause-wait", "0.5"), "cache-pause-wait")
 
         checkError(mpv_initialize(mpv))
 
@@ -1007,6 +1019,9 @@ final class MPVPlayerViewController: UIViewController {
         applyRequestHeaders(sanitizedHeaders)
         isPlayerLoading = true
         isPlayerEnded = false
+        let urlPreview = String(request.urlString.prefix(120))
+        print("[NuvioPlayer] loadfile → \(urlPreview)  audio=\(request.audioUrl != nil ? "YES" : "none")")
+        loadStartUptime = ProcessInfo.processInfo.systemUptime
         command("loadfile", args: [request.urlString, "replace"])
         if let audioUrl = request.audioUrl, !audioUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
@@ -1780,6 +1795,19 @@ final class MPVPlayerViewController: UIViewController {
                     let overlayText: String? = self.isUsingSubtitleOverlay
                         ? (self.getString("sub-text") ?? "")
                         : nil
+                    // Log paused-for-cache transitions so we can see when/how long
+                    // MPV stalls waiting for the network buffer to fill.
+                    if let propData = eventPtr.pointee.data {
+                        let prop = UnsafePointer<mpv_event_property>(OpaquePointer(propData)).pointee
+                        if let name = prop.name, String(cString: name) == "paused-for-cache",
+                           prop.format == MPV_FORMAT_FLAG,
+                           let flagPtr = prop.data?.assumingMemoryBound(to: Int32.self) {
+                            let waiting = flagPtr.pointee != 0
+                            let elapsed = ProcessInfo.processInfo.systemUptime - self.loadStartUptime
+                            print(String(format: "[NuvioPlayer] paused-for-cache=%@ — %.2fs after loadfile",
+                                         waiting ? "YES" : "NO", elapsed))
+                        }
+                    }
                     DispatchQueue.main.async {
                         self.updateState()
                         if let text = overlayText {
@@ -1787,6 +1815,8 @@ final class MPVPlayerViewController: UIViewController {
                         }
                     }
                 case MPV_EVENT_FILE_LOADED:
+                    let elapsed = ProcessInfo.processInfo.systemUptime - self.loadStartUptime
+                    print(String(format: "[NuvioPlayer] FILE_LOADED — %.2fs after loadfile", elapsed))
                     DispatchQueue.main.async {
                         self.clearPlaybackError()
                         self.isPlayerLoading = false

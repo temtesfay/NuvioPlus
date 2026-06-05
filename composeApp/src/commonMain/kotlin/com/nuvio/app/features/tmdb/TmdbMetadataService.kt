@@ -15,6 +15,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -1151,12 +1152,19 @@ object TmdbMetadataService {
             val seasonCount = (details?.numberOfSeasons ?: 0).coerceAtLeast(0)
             if (seasonCount > 0) {
                 val seasonVideos = coroutineScope {
+                    // Limit to 3 concurrent season-video requests. Long-running shows
+                    // (e.g. 9 seasons) would otherwise fire all requests simultaneously,
+                    // hitting TMDB's per-IP rate limit and exhausting the 5s enrichment
+                    // budget — resulting in all requests timing out.
+                    val semaphore = kotlinx.coroutines.sync.Semaphore(3)
                     (1..seasonCount).map { seasonNumber ->
                         async {
-                            seasonNumber to fetchTmdbVideos(
-                                endpoint = "tv/$tmdbId/season/$seasonNumber/videos",
-                                language = language,
-                            )
+                            semaphore.withPermit {
+                                seasonNumber to fetchTmdbVideos(
+                                    endpoint = "tv/$tmdbId/season/$seasonNumber/videos",
+                                    language = language,
+                                )
+                            }
                         }
                     }.awaitAll()
                 }

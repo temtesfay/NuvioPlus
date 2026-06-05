@@ -11,10 +11,12 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.client.statement.request
 import io.ktor.http.HttpMethod
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import platform.Foundation.NSURLComponents
@@ -151,15 +153,20 @@ internal object TrailerExtractionPlatform {
 
         if (candidates.size == 1) return candidates.first()
 
+        // Race all probes — return as soon as the first one succeeds rather than
+        // waiting for all to complete. On slow networks where DNS or one CDN server
+        // stalls, awaitAll() would sit at the 2s limit even when another candidate
+        // responded in 100ms.
         return coroutineScope {
-            val probes = candidates.map { candidate ->
-                async {
-                    if (isUrlReachable(candidate)) candidate else null
+            val result = CompletableDeferred<String>()
+            val jobs = candidates.map { candidate ->
+                launch {
+                    if (isUrlReachable(candidate)) result.complete(candidate)
                 }
             }
-            withTimeoutOrNull(2_000L) {
-                probes.awaitAll().firstOrNull { !it.isNullOrBlank() }
-            } ?: url
+            val winner = withTimeoutOrNull(2_000L) { result.await() }
+            jobs.forEach { it.cancel() }
+            winner ?: url
         }
     }
 

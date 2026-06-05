@@ -5,7 +5,9 @@ import com.nuvio.app.core.network.IPv4FirstDns
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -91,14 +93,30 @@ internal object TrailerExtractionPlatform {
             bestProgressive?.url
         }
 
-        val separatedVideoUrl = bestVideo?.url?.let { resolveReachableUrlOrNull(it) }
-        val combinedCandidateUrl = combinedUrl?.let { resolveReachableUrlOrNull(it) }
-        val videoUrl = separatedVideoUrl ?: combinedCandidateUrl ?: return@withContext null
-        val audioUrl = if (!separatedVideoUrl.isNullOrBlank()) {
-            bestAudio?.url?.let { resolveReachableUrlOrNull(it) }
-        } else {
-            null
+        if (preferFastStart) {
+            // Fastest possible startup: use the 360p muxed progressive MP4 directly.
+            // Single URL, no audio separation, no CDN probing needed.
+            val progressiveUrl = bestProgressive?.url ?: combinedUrl
+            if (progressiveUrl != null) {
+                return@withContext TrailerPlaybackSource(
+                    videoUrl = resolveReachableUrlOrNull(progressiveUrl) ?: return@withContext null,
+                    audioUrl = null,
+                )
+            }
         }
+
+        // Quality path: probe video and audio CDN servers in parallel so the 2s
+        // probe budget is shared rather than paid twice sequentially.
+        val videoBaseUrl = bestVideo?.url ?: combinedUrl ?: return@withContext null
+        val audioBaseUrl = bestAudio?.url
+
+        val (videoUrl, audioUrl) = coroutineScope {
+            val videoJob = async { resolveReachableUrlOrNull(videoBaseUrl) }
+            val audioJob = audioBaseUrl?.let { url -> async { resolveReachableUrlOrNull(url) } }
+            videoJob.await() to audioJob?.await()
+        }
+
+        if (videoUrl == null) return@withContext null
 
         TrailerPlaybackSource(
             videoUrl = videoUrl,
