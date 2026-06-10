@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
@@ -70,7 +69,6 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
-import com.nuvio.app.features.home.components.CollectionCardRemoteImage
 import com.nuvio.app.isIos
 import com.nuvio.app.isMacCatalyst
 import kotlinx.coroutines.delay
@@ -509,12 +507,11 @@ private fun PopupProfileBubble(
                 contentAlignment = Alignment.Center,
             ) {
                 if (avatarImageUrl != null) {
-                    CollectionCardRemoteImage(
-                        imageUrl = avatarImageUrl,
+                    AsyncImage(
+                        model = avatarImageUrl,
                         contentDescription = profile.name,
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.size(48.dp).clip(CircleShape),
                         contentScale = ContentScale.Crop,
-                        animateIfPossible = true,
                     )
                 } else if (profile.name.isNotBlank()) {
                     Text(
@@ -824,12 +821,11 @@ fun ActiveProfileMiniAvatar(
         contentAlignment = Alignment.Center,
     ) {
         if (avatarImageUrl != null) {
-            CollectionCardRemoteImage(
-                imageUrl = avatarImageUrl,
+            AsyncImage(
+                model = avatarImageUrl,
                 contentDescription = profile.name,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.size(size.dp).clip(CircleShape),
                 contentScale = ContentScale.Crop,
-                animateIfPossible = true,
             )
         } else if (profile.name.isNotBlank()) {
             Text(

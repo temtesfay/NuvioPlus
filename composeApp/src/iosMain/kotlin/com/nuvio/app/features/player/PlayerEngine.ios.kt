@@ -346,6 +346,7 @@ actual fun PlatformPlayerSurface(
 }
 
 private fun NuvioPlayerBridge.applyIosVideoOutputSettings(settings: PlayerSettingsUiState) {
+    configureAudioOutput(audioOutput = settings.iosAudioOutputMode.mpvValue)
     configureVideoOutput(
         hardwareDecoder = settings.iosHardwareDecoderMode.mpvValue,
         targetColorspaceHint = settings.iosTargetColorspaceHintEnabled,

@@ -181,6 +181,9 @@ fun PlayerScreen(
     torrentInfoHash: String? = null,
     torrentFileIdx: Int? = null,
     torrentFilename: String? = null,
+    // Accepted for upstream (0.2.4) call-site compatibility; this build's torrent
+    // path resolves via infoHash, so the magnet URI is not consumed here.
+    torrentMagnetUri: String? = null,
     torrentTrackers: List<String> = emptyList(),
     initialPositionMs: Long = 0L,
     initialProgressFraction: Float? = null,

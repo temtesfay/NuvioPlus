@@ -351,6 +351,9 @@ final class MPVPlayerBridgeImpl: NSObject, NuvioPlayerBridge, AVPictureInPicture
             gamma: Int(gamma)
         )
     }
+    func configureAudioOutput(audioOutput: String) {
+        playerVC?.configureAudioOutput(audioOutput: audioOutput)
+    }
     func setPlaybackSpeed(speed: Float) { playerVC?.setSpeed(speed) }
     func setMuted(muted: Bool) { playerVC?.setMuted(muted) }
     func setResizeMode(mode: Int32) { playerVC?.setResize(Int(mode)) }
@@ -620,6 +623,8 @@ private struct PendingLoadRequest {
 
 final class MPVPlayerViewController: UIViewController {
 
+    private static let defaultAudioOutput = "avfoundation,audiounit,"
+
     private let errorStateLock = NSLock()
     private var metalLayer = MetalLayer()
     private var lastAppliedDrawableSize: CGSize = .zero
@@ -802,8 +807,15 @@ final class MPVPlayerViewController: UIViewController {
         checkError(mpv_set_option_string(mpv, "vo", "gpu-next"), "vo")
         checkError(mpv_set_option_string(mpv, "gpu-api", "vulkan"), "gpu-api")
         checkError(mpv_set_option_string(mpv, "gpu-context", "moltenvk"), "gpu-context")
-        checkError(mpv_set_option_string(mpv, "hwdec", "auto"), "hwdec-default")
-        checkError(mpv_set_option_string(mpv, "audio-channels", "stereo"), "audio-channels")
+        // VideoToolbox (Apple's native HW decoder) on both iOS and Mac Catalyst:
+        // upstream switched iOS to VideoToolbox, and on Mac MoltenVK lacks
+        // VK_KHR_video_decode_queue so hwdec=auto fails.
+        checkError(mpv_set_option_string(mpv, "hwdec", "videotoolbox"), "hwdec-default")
+        // Spatial Audio: AVFoundation output passes through multichannel/spatialized
+        // audio (falls back to audiounit); audio-channels=auto negotiates >2 channels
+        // instead of forcing a stereo downmix.
+        checkError(mpv_set_option_string(mpv, "ao", Self.defaultAudioOutput), "ao")
+        checkError(mpv_set_option_string(mpv, "audio-channels", "auto"), "audio-channels")
         checkError(mpv_set_option_string(mpv, "audio-fallback-to-null", "yes"), "audio-fallback-to-null")
         #if targetEnvironment(macCatalyst)
         // MoltenVK does not implement VK_KHR_video_decode_queue, so hwdec=auto
@@ -1171,6 +1183,11 @@ final class MPVPlayerViewController: UIViewController {
         setVideoEqualizer("gamma", gamma)
     }
 
+    func configureAudioOutput(audioOutput: String) {
+        guard mpv != nil else { return }
+        setStringProperty("ao", audioOutput)
+    }
+
     func setSpeed(_ speed: Float) {
         guard mpv != nil else { return }
         var s = Double(speed)
@@ -1178,6 +1195,7 @@ final class MPVPlayerViewController: UIViewController {
     }
 
     func setMuted(_ muted: Bool) {
+        guard mpv != nil else { return }
         setFlag("mute", muted)
     }
 
@@ -1865,6 +1883,7 @@ final class MPVPlayerViewController: UIViewController {
                         self.clearPlaybackError()
                         self.isPlayerLoading = false
                         self.updateState()
+                        self.logCurrentAudioOutput()
                     }
                 case MPV_EVENT_END_FILE:
                     if let data = eventPtr.pointee.data {
@@ -1953,6 +1972,19 @@ final class MPVPlayerViewController: UIViewController {
         var data = Int64()
         mpv_get_property(mpv, name, MPV_FORMAT_INT64, &data)
         return Int(data)
+    }
+
+    private func logCurrentAudioOutput() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, self.mpv != nil else { return }
+            let currentAo = self.getString("current-ao") ?? "unknown"
+            let channels = self.getString("audio-out-params/hr-channels")
+                ?? self.getString("audio-params/hr-channels")
+                ?? "unknown"
+            let channelCount = self.getInt("audio-out-params/channel-count")
+            let codec = self.getString("audio-codec-name") ?? "unknown"
+            print("[MPV] Audio output: ao=\(currentAo), channels=\(channels), channelCount=\(channelCount), codec=\(codec)")
+        }
     }
 
     @discardableResult
