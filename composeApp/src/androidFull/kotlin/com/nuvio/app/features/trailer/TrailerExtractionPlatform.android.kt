@@ -124,6 +124,16 @@ internal object TrailerExtractionPlatform {
         )
     }
 
+    private fun getUserAgentForUrl(url: String): String {
+        val lowercaseUrl = url.lowercase()
+        return when {
+            lowercaseUrl.contains("c=android_vr") -> "com.google.android.apps.youtube.vr.oculus/1.56.21 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1) gzip"
+            lowercaseUrl.contains("c=android") -> "com.google.android.youtube/20.10.35 (Linux; U; Android 14; en_US) gzip"
+            lowercaseUrl.contains("c=ios") -> "com.google.ios.youtube/20.10.1 (iPhone16,2; U; CPU iOS 17_4 like Mac OS X)"
+            else -> defaultHeaders.getValue("user-agent")
+        }
+    }
+
     private suspend fun resolveReachableUrlOrNull(url: String): String? {
         if (!url.contains("googlevideo.com")) return url
         val uri = Uri.parse(url)
@@ -138,7 +148,7 @@ internal object TrailerExtractionPlatform {
         servers.forEachIndexed { index, server ->
             val altHost = host
                 .replaceFirst(Regex("^rr\\d+---"), "rr${index + 1}---")
-                .replaceFirst(Regex("sn-[a-z0-9]+-[a-z0-9]+"), server)
+                .replaceFirst(Regex("sn-[a-z0-9-]+"), server)
             if (altHost != host) {
                 candidates += url.replace(host, altHost)
             }
@@ -167,11 +177,14 @@ internal object TrailerExtractionPlatform {
 
     private fun isUrlReachable(url: String): Boolean {
         return runCatching {
+            val headersMap = defaultHeaders.toMutableMap().apply {
+                put("user-agent", getUserAgentForUrl(url))
+            }
             val request = Request.Builder()
                 .url(url)
                 .get()
                 .header("Range", "bytes=0-0")
-                .headers(buildHeaders(defaultHeaders))
+                .headers(buildHeaders(headersMap))
                 .build()
 
             probeClient.newCall(request).execute().use { response ->

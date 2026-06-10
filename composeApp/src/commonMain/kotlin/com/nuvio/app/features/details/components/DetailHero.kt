@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.nuvio.app.features.details.MetaDetails
+import com.nuvio.app.isMacCatalyst
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.stringResource
 
@@ -235,8 +236,10 @@ fun DetailHero(
 }
 
 private fun detailHeroHeight(maxWidth: Dp, isTablet: Boolean): Dp =
-    if (!isTablet) {
-        (maxWidth * 1.33f).coerceIn(420.dp, 760.dp)
-    } else {
-        (maxWidth * 0.42f).coerceIn(300.dp, 420.dp)
+    when {
+        !isTablet -> (maxWidth * 1.33f).coerceIn(420.dp, 760.dp)
+        // Mac Catalyst's window is large; the standard tablet hero ends up small and
+        // the trailer is hard to see. Roughly double it so the trailer reads clearly.
+        isMacCatalyst -> (maxWidth * 0.62f).coerceIn(600.dp, 840.dp)
+        else -> (maxWidth * 0.42f).coerceIn(300.dp, 420.dp)
     }

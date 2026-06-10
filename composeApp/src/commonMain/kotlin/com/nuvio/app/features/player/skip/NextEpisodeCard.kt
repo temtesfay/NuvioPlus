@@ -38,6 +38,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
+import com.nuvio.app.isMacCatalyst
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.compose_player_episode_title_format
 import nuvio.composeapp.generated.resources.detail_btn_play
@@ -63,6 +64,22 @@ fun NextEpisodeCard(
 
     val isPlayable = nextEpisode.hasAired
 
+    // Mac Catalyst runs on a large desktop screen; scale the phone-sized card up.
+    val mac = isMacCatalyst
+    val cardMaxWidth = if (mac) 400.dp else 292.dp
+    val cardCorner = if (mac) 20.dp else 16.dp
+    val cardPaddingH = if (mac) 12.dp else 9.dp
+    val cardPaddingV = if (mac) 11.dp else 8.dp
+    val thumbWidth = if (mac) 108.dp else 78.dp
+    val thumbHeight = if (mac) 61.dp else 44.dp
+    val thumbCorner = if (mac) 12.dp else 9.dp
+    val infoSpacing = if (mac) 11.dp else 8.dp
+    val labelSize = if (mac) 13.sp else 10.sp
+    val titleSize = if (mac) 16.sp else 12.sp
+    val statusSize = if (mac) 13.sp else 10.sp
+    val playIconSize = if (mac) 18.dp else 13.dp
+    val playLabelSize = if (mac) 15.sp else 11.sp
+
     AnimatedVisibility(
         visible = visible,
         enter = slideInHorizontally(animationSpec = tween(260), initialOffsetX = { it / 2 }) +
@@ -71,22 +88,22 @@ fun NextEpisodeCard(
             fadeOut(animationSpec = tween(160)),
         modifier = modifier,
     ) {
-        val shape = RoundedCornerShape(16.dp)
+        val shape = RoundedCornerShape(cardCorner)
         Row(
             modifier = Modifier
-                .widthIn(max = 292.dp)
+                .widthIn(max = cardMaxWidth)
                 .clip(shape)
                 .background(Color(0xFF191919).copy(alpha = 0.89f))
                 .border(1.dp, Color.White.copy(alpha = 0.12f), shape)
                 .clickable { if (isPlayable) onPlayNext() }
-                .padding(horizontal = 9.dp, vertical = 8.dp),
+                .padding(horizontal = cardPaddingH, vertical = cardPaddingV),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Thumbnail
             Box(
                 modifier = Modifier
-                    .size(width = 78.dp, height = 44.dp)
-                    .clip(RoundedCornerShape(9.dp)),
+                    .size(width = thumbWidth, height = thumbHeight)
+                    .clip(RoundedCornerShape(thumbCorner)),
             ) {
                 AsyncImage(
                     model = nextEpisode.thumbnail,
@@ -108,7 +125,7 @@ fun NextEpisodeCard(
                 )
             }
 
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(infoSpacing))
 
             // Info
             Column(
@@ -118,7 +135,7 @@ fun NextEpisodeCard(
                 Text(
                     text = stringResource(Res.string.player_next_episode),
                     color = Color.White.copy(alpha = 0.8f),
-                    fontSize = 10.sp,
+                    fontSize = labelSize,
                     fontWeight = FontWeight.Medium,
                 )
                 Spacer(modifier = Modifier.height(2.dp))
@@ -130,7 +147,7 @@ fun NextEpisodeCard(
                         nextEpisode.title,
                     ),
                     color = Color.White,
-                    fontSize = 12.sp,
+                    fontSize = titleSize,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     fontWeight = FontWeight.SemiBold,
@@ -151,7 +168,7 @@ fun NextEpisodeCard(
                     Text(
                         text = autoPlayStatus,
                         color = Color.White.copy(alpha = 0.78f),
-                        fontSize = 10.sp,
+                        fontSize = statusSize,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -171,7 +188,7 @@ fun NextEpisodeCard(
                     imageVector = Icons.Default.PlayArrow,
                     contentDescription = null,
                     tint = if (isPlayable) Color.White else Color.White.copy(alpha = 0.65f),
-                    modifier = Modifier.size(13.dp),
+                    modifier = Modifier.size(playIconSize),
                 )
                 Text(
                     text = if (isPlayable) {
@@ -180,7 +197,7 @@ fun NextEpisodeCard(
                         stringResource(Res.string.player_next_episode_unaired)
                     },
                     color = if (isPlayable) Color.White else Color.White.copy(alpha = 0.72f),
-                    fontSize = 11.sp,
+                    fontSize = playLabelSize,
                     modifier = Modifier.padding(start = 3.dp),
                 )
             }

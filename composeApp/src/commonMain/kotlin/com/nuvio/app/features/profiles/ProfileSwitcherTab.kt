@@ -72,6 +72,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import com.nuvio.app.features.home.components.CollectionCardRemoteImage
 import com.nuvio.app.isIos
+import com.nuvio.app.isMacCatalyst
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.*
@@ -237,7 +238,9 @@ fun ProfileSwitcherTab(
                 profile = activeProfile,
                 avatars = avatars,
                 selected = selected,
-                size = 28,
+                // Larger on Mac Catalyst's desktop-sized nav bar so the profile
+                // avatar is comfortably visible and clickable with a cursor.
+                size = if (isMacCatalyst) 40 else 28,
             )
         }
 

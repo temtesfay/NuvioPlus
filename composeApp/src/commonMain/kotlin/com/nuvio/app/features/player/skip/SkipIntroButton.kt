@@ -37,6 +37,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nuvio.app.isMacCatalyst
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.player_skip
 import nuvio.composeapp.generated.resources.player_skip_intro
@@ -99,7 +100,17 @@ fun SkipIntroButton(
         exit = fadeOut(tween(200)) + scaleOut(tween(200), targetScale = 0.8f),
         modifier = modifier,
     ) {
-        val shape = RoundedCornerShape(16.dp)
+        // Mac Catalyst runs on a large desktop screen where the phone-sized button
+        // looks tiny; scale it up so it's comfortably clickable with a cursor.
+        val mac = isMacCatalyst
+        val cornerRadius = if (mac) 22.dp else 16.dp
+        val rowPaddingH = if (mac) 26.dp else 18.dp
+        val rowPaddingV = if (mac) 17.dp else 12.dp
+        val iconSize = if (mac) 28.dp else 20.dp
+        val labelSize = if (mac) 20.sp else 14.sp
+        val labelStartPad = if (mac) 12.dp else 8.dp
+        val progressHeight = if (mac) 4.dp else 3.dp
+        val shape = RoundedCornerShape(cornerRadius)
         Column(
             modifier = Modifier
                 .width(IntrinsicSize.Max)
@@ -108,33 +119,33 @@ fun SkipIntroButton(
                 .clickable { onSkip() },
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                modifier = Modifier.padding(horizontal = rowPaddingH, vertical = rowPaddingV),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
                     imageVector = Icons.Default.SkipNext,
                     contentDescription = null,
                     tint = Color.White,
-                    modifier = Modifier.size(20.dp),
+                    modifier = Modifier.size(iconSize),
                 )
                 Text(
                     text = skipLabel(lastType),
                     color = Color.White,
-                    fontSize = 14.sp,
-                    modifier = Modifier.padding(start = 8.dp),
+                    fontSize = labelSize,
+                    modifier = Modifier.padding(start = labelStartPad),
                 )
             }
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(3.dp)
-                    .clip(RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp))
+                    .height(progressHeight)
+                    .clip(RoundedCornerShape(bottomStart = cornerRadius, bottomEnd = cornerRadius))
                     .background(Color.White.copy(alpha = if (controlsVisible || autoHidden || dismissed) 0f else 0.15f)),
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth(progress.value)
-                        .height(3.dp)
+                        .height(progressHeight)
                         .background(
                             Color(0xFF1E1E1E).copy(
                                 alpha = if (controlsVisible || autoHidden || dismissed) 0f else 0.85f,

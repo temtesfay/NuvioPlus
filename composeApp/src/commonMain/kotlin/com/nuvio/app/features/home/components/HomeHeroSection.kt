@@ -9,7 +9,6 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -52,6 +51,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import com.nuvio.app.features.home.HomeRepository
 import com.nuvio.app.features.home.stableKey
 import com.nuvio.app.features.trailer.TrailerPlaybackSource
 import androidx.compose.ui.Alignment
@@ -123,11 +123,26 @@ fun HomeHeroSection(
     val coroutineScope = rememberCoroutineScope()
 
     // Trailer source is derived from the stable-scope pre-warmed map passed in from
-    // HomeRepository.trailerSources — NO async extraction happens here. This prevents
-    // the "coroutine scope left the composition" failure that cancelled all 47+ candidate
-    // extractions every time the catalog re-published a state update.
+    // HomeRepository.trailerSources. Extraction is triggered via HomeRepository
+    // (stable scope), never directly in the Compose scope — the original direct approach
+    // cancelled all 47+ candidate extractions every time the catalog re-published.
     val settledItem = items.getOrNull(pagerState.settledPage)
     val trailerSource: TrailerPlaybackSource? = settledItem?.let { trailerSources[it.stableKey()] }
+
+    // On-demand extraction: if the settled slide has a YouTube key but no cached source,
+    // trigger extraction immediately — just like the details page does when it mounts.
+    // HomeRepository runs the extraction in its stable scope, so Compose recompositions
+    // and catalog re-publishes cannot cancel it. HeroTrailerSourceCache deduplicates
+    // concurrent calls for the same key, so launching multiple times is safe.
+    //
+    // Key includes youtubeTrailerKey so the effect re-fires when enrichment later
+    // populates the key on a cold launch where it wasn't present at mount time.
+    LaunchedEffect(settledItem?.stableKey(), settledItem?.youtubeTrailerKey) {
+        val item = settledItem ?: return@LaunchedEffect
+        if (trailerSource == null) {
+            HomeRepository.requestTrailerForItem(item)
+        }
+    }
 
     // True once the AVPlayer signals it is buffered and playing.
     // Reset whenever the settled page changes so the poster is shown while buffering.
@@ -515,11 +530,6 @@ private fun HeroContentBlock(
     onItemClick: ((MetaPreview) -> Unit)?,
 ) {
     val titleHoverSource = remember { MutableInteractionSource() }
-    val isTitleHovered by titleHoverSource.collectIsHoveredAsState()
-    // Once shown, keep showing — don't hide when cursor leaves.
-    // Reset when the item changes (slide change).
-    var descriptionShown by remember(item) { mutableStateOf(false) }
-    if (isTitleHovered) descriptionShown = true
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -557,9 +567,9 @@ private fun HeroContentBlock(
             )
         }
 
-        // Description shown on hover (desktop / Mac Catalyst) and stays visible after cursor leaves.
+        // Description always visible (previously hover-gated on desktop / Mac Catalyst).
         AnimatedVisibility(
-            visible = descriptionShown && !item.description.isNullOrBlank(),
+            visible = !item.description.isNullOrBlank(),
             enter = fadeIn(),
             exit = fadeOut(),
         ) {

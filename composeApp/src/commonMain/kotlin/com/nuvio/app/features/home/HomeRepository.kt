@@ -23,8 +23,7 @@ import com.nuvio.app.features.trailer.TrailerPreBufferService
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
+
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -204,6 +203,22 @@ object HomeRepository {
             force = false,
             requestKey = activeRequestKey ?: lastRequestKey,
         )
+    }
+
+    /**
+     * Requests immediate YouTube URL extraction for [item] if it hasn't been resolved yet.
+     * Called from [HomeHeroSection] when the user lands on a slide that has a YouTube key
+     * but no cached source — mirrors the details page's self-trigger behaviour so the hero
+     * carousel doesn't wait for the background pre-warm cycle to reach that slide.
+     *
+     * The actual extraction runs in the stable repository scope, not the Compose scope,
+     * so catalog re-publications and recompositions don't cancel it.
+     */
+    fun requestTrailerForItem(item: MetaPreview) {
+        val key = item.stableKey()
+        if (_trailerSources.value.containsKey(key)) return  // already resolved
+        if (item.youtubeTrailerKey == null && item.alternateTrailerKeys.isEmpty()) return  // no keys to try
+        scope.launch { prewarmSingleSlide(item, slideIndex = -1) }
     }
 
     fun clear() {
@@ -433,22 +448,16 @@ object HomeRepository {
         println("🟢 (HeroTrailer) Enrichment complete — $withTrailers/${items.size} items have trailer keys")
 
         // Pre-warm slides 1-7 in the stable Repository scope (slide 0 was already
-        // started above the moment its keys were resolved). Each item runs in parallel;
-        // within each item keys are tried in order and we stop at the first working URL.
-        // Limit concurrent pre-warming to 2 slides at a time. Running all 7 in
-        // parallel floods resolveReachableUrl's CDN probes (2s timeout each) with
-        // too many simultaneous HTTP requests, which causes network congestion and
-        // timeouts for some trailers. 2-wide gives good throughput with manageable
-        // pressure on the CDN probe step.
-        val prewarmSemaphore = Semaphore(2)
+        // started above the moment its keys were resolved). All items run in parallel —
+        // HeroTrailerSourceCache already de-duplicates concurrent requests for the same
+        // key via per-key Mutex, and Darwin's NSURLSession caps connections to
+        // ~6 per host, so the OS handles back-pressure without an artificial semaphore.
         heroTrailerPreWarmJob?.cancel()
         heroTrailerPreWarmJob = scope.launch {
             coroutineScope {
                 enriched.drop(1).mapIndexed { i, item ->
                     async {
-                        prewarmSemaphore.withPermit {
-                            prewarmSingleSlide(item, slideIndex = i + 1)
-                        }
+                        prewarmSingleSlide(item, slideIndex = i + 1)
                     }
                 }.awaitAll()
             }

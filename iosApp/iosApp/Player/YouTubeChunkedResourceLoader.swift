@@ -86,6 +86,18 @@ final class YouTubeChunkedResourceLoader: NSObject, AVAssetResourceLoaderDelegat
 
     // MARK: - Content info (MIME type + file length)
 
+    private func userAgentForURL(_ url: URL) -> String? {
+        let urlString = url.absoluteString.lowercased()
+        if urlString.contains("c=android_vr") {
+            return "com.google.android.apps.youtube.vr.oculus/1.56.21 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1) gzip"
+        } else if urlString.contains("c=android") {
+            return "com.google.android.youtube/20.10.35 (Linux; U; Android 14; en_US) gzip"
+        } else if urlString.contains("c=ios") {
+            return "com.google.ios.youtube/20.10.1 (iPhone16,2; U; CPU iOS 17_4 like Mac OS X)"
+        }
+        return "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
+    }
+
     private func fetchContentInfo(
         realURL: URL,
         infoRequest: AVAssetResourceLoadingContentInformationRequest,
@@ -94,9 +106,12 @@ final class YouTubeChunkedResourceLoader: NSObject, AVAssetResourceLoaderDelegat
         var req = URLRequest(url: realURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
         // Standard HTTP Range header (not YouTube's &range= param) to get Content-Range with total length.
         req.setValue("bytes=0-1", forHTTPHeaderField: "Range")
+        if let ua = userAgentForURL(realURL) {
+            req.setValue(ua, forHTTPHeaderField: "User-Agent")
+        }
 
-        session.dataTask(with: req) { _, response, error in
-            guard !loadingRequest.isFinished else { return }
+        session.dataTask(with: req) { [weak self] _, response, error in
+            guard let self = self, !loadingRequest.isFinished else { return }
             guard error == nil,
                   let http = response as? HTTPURLResponse,
                   http.statusCode == 200 || http.statusCode == 206 else {
@@ -104,13 +119,17 @@ final class YouTubeChunkedResourceLoader: NSObject, AVAssetResourceLoaderDelegat
                 return
             }
 
+            var contentLength: Int64 = http.expectedContentLength
             // Content-Range: bytes 0-1/TOTAL → parse TOTAL
             if let raw = http.value(forHTTPHeaderField: "Content-Range"),
                let slash = raw.lastIndex(of: "/"),
                let total = Int64(raw[raw.index(after: slash)...].trimmingCharacters(in: .whitespaces)) {
-                infoRequest.contentLength = total
+                contentLength = total
             }
 
+            if contentLength > 0 {
+                infoRequest.contentLength = contentLength
+            }
             infoRequest.isByteRangeAccessSupported = true
             infoRequest.contentType = self.utiForMIME(http.mimeType)
             loadingRequest.finishLoading()
@@ -137,7 +156,11 @@ final class YouTubeChunkedResourceLoader: NSObject, AVAssetResourceLoaderDelegat
             return
         }
 
-        let req = URLRequest(url: chunkURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        var req = URLRequest(url: chunkURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        if let ua = userAgentForURL(realURL) {
+            req.setValue(ua, forHTTPHeaderField: "User-Agent")
+        }
+
         session.dataTask(with: req) { [weak self] data, response, error in
             guard let self = self, !loadingRequest.isFinished else { return }
 

@@ -721,18 +721,30 @@ struct ContentView: View {
     /// types on every UIScrollView and UIPanGestureRecognizer found.
     /// Also tunes deceleration rate for smoother momentum on Mac Catalyst.
     fileprivate static func patchScrollViews(in view: UIView) {
+        // Only write when the value actually differs. The 1 Hz patch timer re-walks
+        // the entire view tree every second for the app's lifetime; unconditionally
+        // re-assigning these properties on every UIScrollView each pass triggered KVO
+        // churn and visible mid-scroll stutter ("lags"). Guarding the writes makes the
+        // steady-state pass a cheap read-only DFS.
+        let desiredMask: UIScrollTypeMask = [.continuous, .discrete]
+        // Use UIKit's standard .normal deceleration (0.998). The previous 0.9992 sat
+        // above normal, giving lists extra runaway momentum that felt "too fast" and
+        // flung past the intended target on a trackpad swipe or mouse wheel.
+        let desiredRate = UIScrollView.DecelerationRate.normal.rawValue
         if let scrollView = view as? UIScrollView {
-            scrollView.panGestureRecognizer.allowedScrollTypesMask = [.continuous, .discrete]
-            // 0.9992 is slightly above UIKit's .normal (0.998) — lists coast further
-            // after a trackpad swipe, matching native macOS feel. Always overwrite:
-            // Compose can reset the rate when it recycles its scroll containers.
-            scrollView.decelerationRate = UIScrollView.DecelerationRate(rawValue: 0.9992)
+            if scrollView.panGestureRecognizer.allowedScrollTypesMask != desiredMask {
+                scrollView.panGestureRecognizer.allowedScrollTypesMask = desiredMask
+            }
+            if abs(scrollView.decelerationRate.rawValue - desiredRate) > 0.0001 {
+                scrollView.decelerationRate = UIScrollView.DecelerationRate(rawValue: desiredRate)
+            }
         }
         // Patch standalone pan gesture recognizers too (Compose uses these for custom
         // scroll containers that don't subclass UIScrollView).
         for gesture in view.gestureRecognizers ?? [] {
-            if let pan = gesture as? UIPanGestureRecognizer {
-                pan.allowedScrollTypesMask = [.continuous, .discrete]
+            if let pan = gesture as? UIPanGestureRecognizer,
+               pan.allowedScrollTypesMask != desiredMask {
+                pan.allowedScrollTypesMask = desiredMask
             }
         }
         view.subviews.forEach { patchScrollViews(in: $0) }

@@ -22,6 +22,7 @@ private val VIDEO_ID_REGEX = Regex("^[a-zA-Z0-9_-]{11}$")
 private val API_KEY_REGEX = Regex("\"INNERTUBE_API_KEY\":\"([^\"]+)\"")
 private val VISITOR_DATA_REGEX = Regex("\"VISITOR_DATA\":\"([^\"]+)\"")
 private val QUALITY_LABEL_REGEX = Regex("(\\d{2,4})p")
+private val CODECS_REGEX = Regex("codecs=\"?([^\";]+)\"?")
 
 private data class YouTubeClient(
     val key: String,
@@ -46,6 +47,12 @@ internal data class StreamCandidate(
     val height: Int,
     val fps: Int,
     val ext: String,
+    // Codec family parsed from the mimeType `codecs="..."` parameter. The MP4
+    // container is not enough to decide decodability: YouTube ships 1440p/2160p
+    // video as AV1/VP9 *inside* an MP4 container, which AVFoundation cannot decode
+    // (audio plays, video stays black). Platforms filter on this — not just `ext`.
+    // Video: "h264", "h265", "av1", "vp9", "vp8". Audio: "aac", "opus", "ac3".
+    val codec: String = "unknown",
 )
 
 private data class ManifestBestVariant(
@@ -217,6 +224,7 @@ class InAppYouTubeExtractor {
                                 height = height,
                                 fps = fps,
                                 ext = if (mimeType.contains("webm")) "webm" else "mp4",
+                                codec = videoCodecFamily(mimeType),
                             )
                         }
 
@@ -243,6 +251,7 @@ class InAppYouTubeExtractor {
                                     height = height,
                                     fps = fps,
                                     ext = if (mimeType.contains("webm")) "webm" else "mp4",
+                                    codec = videoCodecFamily(mimeType),
                                 )
                             } else if (hasAudio) {
                                 val bitrate = format.numberValue("bitrate")
@@ -257,6 +266,7 @@ class InAppYouTubeExtractor {
                                     height = 0,
                                     fps = 0,
                                     ext = if (mimeType.contains("webm")) "webm" else "m4a",
+                                    codec = audioCodecFamily(mimeType),
                                 )
                             }
                         }
@@ -529,6 +539,31 @@ class InAppYouTubeExtractor {
         val width = parts[0].toIntOrNull() ?: 0
         val height = parts[1].toIntOrNull() ?: 0
         return width to height
+    }
+
+    private fun parseCodecString(mimeType: String): String =
+        CODECS_REGEX.find(mimeType)?.groupValues?.getOrNull(1)?.trim()?.lowercase().orEmpty()
+
+    private fun videoCodecFamily(mimeType: String): String {
+        val codecs = parseCodecString(mimeType)
+        return when {
+            codecs.startsWith("avc1") || codecs.startsWith("avc3") -> "h264"
+            codecs.startsWith("hev1") || codecs.startsWith("hvc1") -> "h265"
+            codecs.startsWith("av01") -> "av1"
+            codecs.startsWith("vp9") || codecs.startsWith("vp09") -> "vp9"
+            codecs.startsWith("vp8") || codecs.startsWith("vp08") -> "vp8"
+            else -> "unknown"
+        }
+    }
+
+    private fun audioCodecFamily(mimeType: String): String {
+        val codecs = parseCodecString(mimeType)
+        return when {
+            codecs.startsWith("mp4a") -> "aac"
+            codecs.startsWith("opus") -> "opus"
+            codecs.startsWith("ac-3") || codecs.startsWith("ec-3") -> "ac3"
+            else -> "unknown"
+        }
     }
 
     private fun parseQualityLabel(label: String?): Int? {

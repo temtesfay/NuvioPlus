@@ -73,20 +73,27 @@ internal object TrailerExtractionPlatform {
         )
     }
 
-    // AVFoundation (used by the hero trailer player) only supports M4A/AAC for
-    // external audio streams — WebM/Opus is not decoded. Prefer M4A candidates;
-    // fall back to the full list only when no M4A stream is available at all.
+    // AVFoundation (used by the hero trailer player) only supports AAC for external
+    // audio streams — WebM/Opus is not decoded. Prefer AAC by *codec* (not just the
+    // m4a container); fall back to the m4a container, then the full list.
     fun filterAudioCandidates(candidates: List<StreamCandidate>): List<StreamCandidate> {
+        val aacCandidates = candidates.filter { it.codec == "aac" }
+        if (aacCandidates.isNotEmpty()) return aacCandidates
         val m4aCandidates = candidates.filter { it.ext == "m4a" }
         return m4aCandidates.ifEmpty { candidates }
     }
 
-    // AVFoundation only decodes H.264/H.265 (MP4/M4V) — it cannot handle
-    // WebM/VP9/AV1. The android_vr YouTube client often returns WebM as its
-    // highest-quality adaptive video stream, which causes immediate AVPlayerItem
-    // failure (Bridge failed after 100ms). Filter to MP4 so AVFoundation always
-    // gets a decodable codec. Falls back to all candidates if no MP4 is available.
+    // AVFoundation only decodes H.264 and HEVC — it cannot handle VP9/AV1/VP8.
+    // Filtering on the MP4 *container* alone is not enough: YouTube ships 1440p/2160p
+    // video as AV1 inside an MP4 container, which AVPlayer accepts but renders black
+    // (audio plays, no video — e.g. Stranger Things' 2160p AV1 stream). Filter on the
+    // actual codec family. Prefer H.264 (caps at 1080p, universally decodable), then
+    // HEVC, then fall back to the MP4 container, then all candidates.
     fun filterVideoCandidates(candidates: List<StreamCandidate>): List<StreamCandidate> {
+        val h264Candidates = candidates.filter { it.codec == "h264" }
+        if (h264Candidates.isNotEmpty()) return h264Candidates
+        val h265Candidates = candidates.filter { it.codec == "h265" }
+        if (h265Candidates.isNotEmpty()) return h265Candidates
         val mp4Candidates = candidates.filter { it.ext == "mp4" }
         return mp4Candidates.ifEmpty { candidates }
     }
@@ -142,6 +149,16 @@ internal object TrailerExtractionPlatform {
         )
     }
 
+    private fun getUserAgentForUrl(url: String): String {
+        val lowercaseUrl = url.lowercase()
+        return when {
+            lowercaseUrl.contains("c=android_vr") -> "com.google.android.apps.youtube.vr.oculus/1.56.21 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1) gzip"
+            lowercaseUrl.contains("c=android") -> "com.google.android.youtube/20.10.35 (Linux; U; Android 14; en_US) gzip"
+            lowercaseUrl.contains("c=ios") -> "com.google.ios.youtube/20.10.1 (iPhone16,2; U; CPU iOS 17_4 like Mac OS X)"
+            else -> defaultHeaders.getValue("user-agent")
+        }
+    }
+
     private suspend fun resolveReachableUrl(url: String): String {
         if (!url.contains("googlevideo.com")) return url
 
@@ -155,7 +172,7 @@ internal object TrailerExtractionPlatform {
         servers.forEachIndexed { index, server ->
             val altHost = host
                 .replaceFirst(Regex("^rr\\d+---"), "rr${index + 1}---")
-                .replaceFirst(Regex("sn-[a-z0-9]+-[a-z0-9]+"), server)
+                .replaceFirst(Regex("sn-[a-z0-9-]+"), server)
             if (altHost != host) {
                 candidates += url.replace(host, altHost)
             }
@@ -187,7 +204,7 @@ internal object TrailerExtractionPlatform {
                 method = "GET",
                 headers = mapOf(
                     "range" to "bytes=0-0",
-                    "user-agent" to defaultHeaders.getValue("user-agent"),
+                    "user-agent" to getUserAgentForUrl(url),
                 ),
                 body = null,
                 timeoutMillis = 2_000L,

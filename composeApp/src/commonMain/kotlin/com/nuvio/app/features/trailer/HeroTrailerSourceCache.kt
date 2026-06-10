@@ -17,7 +17,7 @@ import kotlinx.coroutines.sync.withLock
  * gets fresh URLs.
  */
 object HeroTrailerSourceCache {
-    private val cache = mutableMapOf<String, TrailerPlaybackSource?>()
+    private val cache = mutableMapOf<String, TrailerPlaybackSource>()
     // Track in-flight resolutions so concurrent callers for the same key don't
     // each fire their own extraction.
     private val inflight = mutableMapOf<String, Mutex>()
@@ -25,9 +25,10 @@ object HeroTrailerSourceCache {
 
     /**
      * Returns a cached source for [youtubeKey] if one exists, otherwise resolves
-     * via the platform extractor and caches the result. Null results are also
-     * cached — a video that failed to resolve once will fail the same way again
-     * within the session, and we'd rather not pay the cost a second time.
+     * via the platform extractor and caches the result. Only successful (non-null)
+     * resolutions are cached — failures (network error, YouTube rate-limit) are
+     * NOT stored, so the next call for the same key will retry rather than returning
+     * a stale null from a previous transient failure.
      *
      * [preferFastStart] selects a 360p muxed MP4 (single AVPlayer, audio in-band)
      * over the higher-quality adaptive split-stream path. Use this for the first
@@ -40,17 +41,21 @@ object HeroTrailerSourceCache {
         // 360p result doesn't clobber a later quality resolution for the same key.
         val cacheKey = if (preferFastStart) "${youtubeKey}@fast" else youtubeKey
 
+        // Only return the cached result if it is a successful resolution. We
+        // intentionally do NOT cache null (failure) results: a null can be caused by
+        // a transient network error or YouTube rate-limiting, and permanently caching
+        // it would mean the details page can never recover without an app restart.
         cache[cacheKey]?.let { return it }
-        if (cache.containsKey(cacheKey)) return null
 
         // De-duplicate concurrent in-flight requests for the same key
         val lock = mapLock.withLock {
             inflight.getOrPut(cacheKey) { Mutex() }
         }
         return lock.withLock {
-            if (cache.containsKey(cacheKey)) {
+            // Re-check inside the lock — a concurrent caller may have just populated it.
+            cache[cacheKey]?.let {
                 inflight.remove(cacheKey)
-                return@withLock cache[cacheKey]
+                return@withLock it
             }
             val source = runCatching {
                 TrailerPlaybackResolver.resolveFromYouTubeUrl(
@@ -58,7 +63,9 @@ object HeroTrailerSourceCache {
                     preferFastStart = preferFastStart,
                 )
             }.getOrNull()
-            cache[cacheKey] = source
+            // Only cache successful resolutions so transient failures (rate-limit,
+            // network timeout) can be retried on the next call.
+            if (source != null) cache[cacheKey] = source
             inflight.remove(cacheKey)
             source
         }
