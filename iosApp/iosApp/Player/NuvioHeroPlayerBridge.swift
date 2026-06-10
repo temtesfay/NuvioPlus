@@ -193,6 +193,7 @@ final class NuvioHeroPlayerBridgeImpl: HeroPlayerBridge {
         } else {
             videoItem = AVPlayerItem(url: vUrl)
         }
+        videoItem.allowedAudioSpatializationFormats = []
         videoPlayer = AVPlayer(playerItem: videoItem)
         // Keep muted until markReady() confirms the first frame is visible.
         // This prevents the muxed audio track from bleeding out over the poster.
@@ -215,6 +216,7 @@ final class NuvioHeroPlayerBridgeImpl: HeroPlayerBridge {
             } else {
                 aItem = AVPlayerItem(url: aUrl)
             }
+            aItem.allowedAudioSpatializationFormats = []
             let aPlayer = AVPlayer(playerItem: aItem)
             aPlayer.isMuted = true
             aPlayer.volume = 0

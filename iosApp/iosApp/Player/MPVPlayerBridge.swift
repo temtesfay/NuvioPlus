@@ -904,20 +904,25 @@ final class MPVPlayerViewController: UIViewController {
         guard mouseMovedMonitor == nil else { return }
 
         // NSEventMaskMouseMoved(32) | NSEventMaskLeftMouseDragged(64) | NSEventMaskRightMouseDragged(128)
-        let mask = NSNumber(value: UInt64(32 | 64 | 128))
+        // The mask is a *primitive* NSEventMask (UInt64), not an object. Passing it via
+        // perform:with: (as an NSNumber) hands the method the NSNumber's pointer address
+        // instead of the bit mask, so the monitor matches mouse-moved events only by
+        // coincidence (e.g. occasionally on a click). Call through a C function pointer
+        // so the UInt64 is passed correctly — same technique as setCursorHiddenUntilMouseMoves.
+        let mask: UInt64 = 32 | 64 | 128
         typealias EventBlock = @convention(block) (AnyObject) -> AnyObject?
         let block: EventBlock = { [weak self] event in
             self?.handleMouseMoved()
             return event
         }
         if let nsEventClass = NSClassFromString("NSEvent") {
-            let blockObj = block as AnyObject
-            if let result = (nsEventClass as AnyObject).perform(
-                NSSelectorFromString("addLocalMonitorForEventsMatchingMask:handler:"),
-                with: mask,
-                with: blockObj
-            ) {
-                mouseMovedMonitor = result.takeUnretainedValue()
+            let sel = NSSelectorFromString("addLocalMonitorForEventsMatchingMask:handler:")
+            if let method = class_getClassMethod(nsEventClass, sel) {
+                typealias AddMonitorFn = @convention(c) (AnyObject, Selector, UInt64, AnyObject) -> AnyObject?
+                let fn = unsafeBitCast(method_getImplementation(method), to: AddMonitorFn.self)
+                if let token = fn(nsEventClass as AnyObject, sel, mask, block as AnyObject) {
+                    mouseMovedMonitor = token
+                }
             }
         }
 

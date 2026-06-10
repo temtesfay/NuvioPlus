@@ -135,7 +135,7 @@ internal object TrailerExtractionPlatform {
         // Probe both URLs in parallel so the 2s CDN probe budget is shared rather
         // than paid twice sequentially — cuts loading time roughly in half.
         val videoBaseUrl = bestVideo?.url ?: combinedUrl ?: return@withContext null
-        val audioBaseUrl = bestAudio?.url
+        val audioBaseUrl = if (bestVideo != null) bestAudio?.url else null
 
         val (videoUrl, audioUrl) = coroutineScope {
             val videoJob = async { resolveReachableUrl(videoBaseUrl) }

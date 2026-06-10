@@ -3,7 +3,7 @@
 TEAM_ID=
 
 PRODUCT_NAME=Nuvio
-PRODUCT_BUNDLE_IDENTIFIER=com.temtesfay.nuvio
+PRODUCT_BUNDLE_IDENTIFIER=com.temtesfay.nuvioapp
 
 // Xcode 26 beta SDK bug: MacOSX26.x.sdk/System/Library/Frameworks/AVKit.framework/Headers/AVKit.h
 // includes AVInputPickerInteraction.h which is missing from the macOS SDK root but present in

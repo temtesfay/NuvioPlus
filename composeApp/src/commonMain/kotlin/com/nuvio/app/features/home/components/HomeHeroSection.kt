@@ -567,9 +567,9 @@ private fun HeroContentBlock(
             )
         }
 
-        // Description always visible (previously hover-gated on desktop / Mac Catalyst).
+        // Description visible on Mac Catalyst only.
         AnimatedVisibility(
-            visible = !item.description.isNullOrBlank(),
+            visible = isMacCatalyst && !item.description.isNullOrBlank(),
             enter = fadeIn(),
             exit = fadeOut(),
         ) {
